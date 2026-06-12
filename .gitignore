@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+backend/backend.log
+backend/backend_err.log
+frontend/frontend.log
+frontend/frontend_err.log
+
+# Secrets
+.env
+*.env
+backend/.env
+
+# Node
+frontend/node_modules/
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# React build cache (bukan hasil build)
+frontend/build/static/js/*.map
+frontend/node_modules/.cache/
+
+# YOLO model weights (besar, download terpisah)
+*.pt
+*.pth
+*.onnx
+*.weights
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

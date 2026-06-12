@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&family=Montserrat:ital,wght@0,400;0,700;0,900;1,900&display=swap');
+
+body {
+  margin: 0;
+  /* Gunakan Inter sebagai font utama agar data angka mudah dibaca */
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #020617; /* Slate-950 */
+}
+
+.leaflet-div-icon {
+  background: transparent !important;
+  border: none !important;
+}
+
