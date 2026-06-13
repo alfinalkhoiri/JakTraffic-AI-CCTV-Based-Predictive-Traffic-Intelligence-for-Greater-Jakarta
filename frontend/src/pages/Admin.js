@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import axios from "axios";
 import { Link } from "react-router-dom";
 import ChatPopup from "../components/ChatPopup";
@@ -69,6 +69,45 @@ const StatCard = ({ title, value, icon }) => (
 );
 
 /* ======================================================
+   🎯 YOLO RESULT CARD
+====================================================== */
+function YoloResultCard({ result, live = false, showTime = false }) {
+  if (!result) return null;
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="bg-yellow-900/30 border border-yellow-800/50 rounded-xl p-3 text-center">
+          {live && <span className="inline-flex items-center gap-1 text-[9px] text-red-400 font-bold mb-0.5"><span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"/>LIVE</span>}
+          <p className="text-[9px] text-yellow-500 uppercase font-bold">Total</p>
+          <p className="text-3xl font-black text-yellow-400">{result.vehicle_count}</p>
+        </div>
+        {Object.entries(result.class_counts || {}).map(([k, v]) => (
+          <div key={k} className="bg-slate-800/60 rounded-xl p-3 text-center">
+            <p className="text-[9px] text-slate-500 uppercase font-bold">{k}</p>
+            <p className="text-2xl font-black text-blue-400">{v}</p>
+          </div>
+        ))}
+        {showTime && result.processing_time_ms != null && (
+          <div className="bg-slate-800/60 rounded-xl p-3 text-center">
+            <p className="text-[9px] text-slate-500 uppercase font-bold">Waktu</p>
+            <p className="text-lg font-black text-slate-300">{result.processing_time_ms}ms</p>
+          </div>
+        )}
+      </div>
+      {result.annotated_image && (
+        <div className="rounded-xl overflow-hidden border border-slate-700">
+          <div className="bg-slate-800 px-3 py-1 text-[10px] text-slate-400 font-bold uppercase flex items-center gap-1.5">
+            {live && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"/>}
+            Hasil Deteksi YOLO 11
+          </div>
+          <img src={`data:image/jpeg;base64,${result.annotated_image}`} alt="YOLO" className="w-full" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ======================================================
    🚀 MAIN ADMIN
 ====================================================== */
 export default function Admin() {
@@ -95,11 +134,30 @@ export default function Admin() {
   const [modelInfo, setModelInfo] = useState(null);
   const [showChat, setShowChat] = useState(false);
 
-  // YOLO detection upload
+  // YOLO section tab: 'upload' | 'webcam' | 'stream'
+  const [yoloTab, setYoloTab] = useState("upload");
+
+  // Upload tab
   const [detectFile, setDetectFile] = useState(null);
   const [detectResult, setDetectResult] = useState(null);
   const [detecting, setDetecting] = useState(false);
   const [detectError, setDetectError] = useState("");
+
+  // Webcam tab
+  const [webcamRunning, setWebcamRunning] = useState(false);
+  const [webcamResult, setWebcamResult] = useState(null);
+  const [webcamError, setWebcamError] = useState("");
+  const videoRef        = useRef(null);
+  const canvasRef       = useRef(null);
+  const captureInterval = useRef(null);
+  const webcamStream    = useRef(null);
+
+  // Stream URL tab
+  const [streamUrl, setStreamUrl]       = useState("");
+  const [streamRunning, setStreamRunning] = useState(false);
+  const [streamResult, setStreamResult]  = useState(null);
+  const [streamError, setStreamError]    = useState("");
+  const streamSse = useRef(null);
 
   /* ======================================================
      📡 FETCH CCTV LIST
@@ -173,6 +231,86 @@ export default function Admin() {
       setDetecting(false);
     }
   };
+
+  /* ---------- WEBCAM HANDLERS ---------- */
+  const startWebcam = useCallback(async () => {
+    setWebcamError("");
+    setWebcamResult(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      webcamStream.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      setWebcamRunning(true);
+
+      captureInterval.current = setInterval(async () => {
+        if (!videoRef.current || !canvasRef.current) return;
+        const canvas = canvasRef.current;
+        canvas.width  = videoRef.current.videoWidth  || 640;
+        canvas.height = videoRef.current.videoHeight || 480;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+
+        canvas.toBlob(async (blob) => {
+          if (!blob) return;
+          const form = new FormData();
+          form.append("frame", blob, "frame.jpg");
+          if (selectedCam?.id) form.append("camera_id", selectedCam.id);
+          try {
+            const res = await axios.post(`${API_BASE}/api/detect-frame`, form, {
+              headers: { "Content-Type": "multipart/form-data" },
+              timeout: 10000,
+            });
+            setWebcamResult(res.data);
+          } catch (e) {
+            setWebcamError(e?.response?.data?.error || e.message);
+          }
+        }, "image/jpeg", 0.85);
+      }, 1000);
+    } catch (e) {
+      setWebcamError(e.message || "Kamera tidak bisa diakses");
+    }
+  }, [selectedCam]);
+
+  const stopWebcam = useCallback(() => {
+    clearInterval(captureInterval.current);
+    captureInterval.current = null;
+    if (webcamStream.current) {
+      webcamStream.current.getTracks().forEach((t) => t.stop());
+      webcamStream.current = null;
+    }
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setWebcamRunning(false);
+  }, []);
+
+  /* ---------- STREAM URL HANDLERS ---------- */
+  const startStream = useCallback(() => {
+    if (!streamUrl.trim()) return;
+    setStreamError("");
+    setStreamResult(null);
+
+    const camParam = selectedCam?.id ? `&camera_id=${selectedCam.id}` : "";
+    const url = `${API_BASE}/api/live-detect?url=${encodeURIComponent(streamUrl)}${camParam}`;
+    const es = new EventSource(url);
+
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.error) { setStreamError(data.error); es.close(); setStreamRunning(false); }
+        else setStreamResult(data);
+      } catch { /* ignore */ }
+    };
+    es.onerror = () => { setStreamError("Koneksi SSE terputus"); es.close(); setStreamRunning(false); };
+    streamSse.current = es;
+    setStreamRunning(true);
+  }, [streamUrl, selectedCam]);
+
+  const stopStream = useCallback(() => {
+    if (streamSse.current) { streamSse.current.close(); streamSse.current = null; }
+    setStreamRunning(false);
+  }, []);
 
   const openAddModal = () => {
     setIsEditing(false);
@@ -358,113 +496,183 @@ export default function Admin() {
           </section>
         )}
 
-        {/* ======== YOLO 11 DETECTION UPLOAD ======== */}
+        {/* ======== YOLO 11 DETECTION (tabbed) ======== */}
         <section className="mt-10 rounded-3xl overflow-hidden border border-slate-800">
+          {/* Header */}
           <div className="bg-gradient-to-r from-yellow-900/40 to-orange-900/40 px-5 py-3 flex items-center gap-2">
             <Cpu size={18} className="text-yellow-400" />
-            <span className="text-sm font-bold text-yellow-300">UJI DETEKSI YOLO 11</span>
-            <span className="ml-auto text-[10px] text-slate-500">Upload gambar/video → YOLO deteksi kendaraan</span>
+            <span className="text-sm font-bold text-yellow-300">YOLO 11 — DETEKSI KENDARAAN</span>
+            {selectedCam && (
+              <span className="ml-auto text-[10px] text-slate-400">
+                Update ke: <span className="text-yellow-400 font-bold">{selectedCam.name}</span>
+              </span>
+            )}
+          </div>
+
+          {/* Tabs */}
+          <div className="flex border-b border-slate-800 bg-slate-900/40">
+            {[
+              { id: "upload", label: "📁 Upload" },
+              { id: "webcam", label: "📷 Webcam Live" },
+              { id: "stream", label: "📡 Stream URL" },
+            ].map((t) => (
+              <button
+                key={t.id}
+                onClick={() => {
+                  setYoloTab(t.id);
+                  if (webcamRunning) stopWebcam();
+                  if (streamRunning) stopStream();
+                }}
+                className={`px-5 py-2.5 text-xs font-bold transition-colors border-b-2 ${
+                  yoloTab === t.id
+                    ? "border-yellow-500 text-yellow-400"
+                    : "border-transparent text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
           </div>
 
           <div className="p-5 space-y-3">
-            {/* Drop zone */}
-            <label
-              className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center gap-2 cursor-pointer transition-colors ${
-                detectFile ? "border-yellow-600 bg-yellow-900/10" : "border-slate-700 hover:border-yellow-700"
-              }`}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault();
-                const file = e.dataTransfer.files[0];
-                if (file) { setDetectFile(file); setDetectResult(null); setDetectError(""); }
-              }}
-            >
-              <input
-                type="file"
-                className="hidden"
-                accept="image/*,video/mp4,video/avi,video/mov,video/mkv"
-                onChange={(e) => {
-                  const file = e.target.files[0];
-                  if (file) { setDetectFile(file); setDetectResult(null); setDetectError(""); }
-                }}
-              />
-              {detectFile ? (
-                <div className="text-center">
-                  <p className="text-yellow-400 text-sm font-bold">{detectFile.name}</p>
-                  <p className="text-slate-500 text-xs mt-1">{(detectFile.size / 1024 / 1024).toFixed(2)} MB</p>
-                </div>
-              ) : (
-                <>
-                  <span className="text-4xl">📸</span>
-                  <span className="text-sm text-slate-400 font-medium">Drop gambar atau video di sini</span>
-                  <span className="text-xs text-slate-500">JPG · PNG · MP4 · AVI · MOV</span>
-                </>
-              )}
-            </label>
 
-            <button
-              onClick={handleDetect}
-              disabled={!detectFile || detecting}
-              className={`w-full py-3 rounded-xl text-sm font-bold transition-colors flex items-center justify-center gap-2 ${
-                !detectFile || detecting
-                  ? "bg-slate-700 text-slate-500 cursor-not-allowed"
-                  : "bg-yellow-600 hover:bg-yellow-500 text-white"
-              }`}
-            >
-              {detecting ? (
-                <>
-                  <span className="flex gap-1">
-                    {[0,1,2].map((i) => (
-                      <span key={i} className="w-1.5 h-1.5 bg-yellow-300 rounded-full animate-bounce"
-                        style={{ animationDelay: `${i * 0.15}s` }} />
-                    ))}
-                  </span>
-                  Mendeteksi...
-                </>
-              ) : (
-                <>⚡ Jalankan YOLO Deteksi</>
-              )}
-            </button>
-
-            {detectError && (
-              <div className="bg-red-900/30 border border-red-700 rounded-xl p-3 text-sm text-red-300">
-                ❌ {detectError}
-              </div>
-            )}
-
-            {detectResult && (
-              <div className="space-y-3">
-                {/* Stats */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  <div className="bg-yellow-900/30 border border-yellow-800/50 rounded-xl p-3 text-center">
-                    <p className="text-[9px] text-yellow-500 uppercase font-bold">Total Kendaraan</p>
-                    <p className="text-3xl font-black text-yellow-400">{detectResult.vehicle_count}</p>
-                  </div>
-                  {Object.entries(detectResult.class_counts).map(([k, v]) => (
-                    <div key={k} className="bg-slate-800/60 rounded-xl p-3 text-center">
-                      <p className="text-[9px] text-slate-500 uppercase font-bold">{k}</p>
-                      <p className="text-2xl font-black text-blue-400">{v}</p>
-                    </div>
-                  ))}
-                  <div className="bg-slate-800/60 rounded-xl p-3 text-center">
-                    <p className="text-[9px] text-slate-500 uppercase font-bold">Waktu Proses</p>
-                    <p className="text-lg font-black text-slate-300">{detectResult.processing_time_ms}ms</p>
-                  </div>
-                </div>
-
-                {/* Annotated image */}
-                <div className="rounded-xl overflow-hidden border border-slate-700">
-                  <div className="bg-slate-800 px-3 py-1.5 text-[10px] text-slate-400 font-bold uppercase">
-                    Hasil Deteksi YOLO 11
-                  </div>
-                  <img
-                    src={`data:image/jpeg;base64,${detectResult.annotated_image}`}
-                    alt="YOLO Detection Result"
-                    className="w-full"
+            {/* ── TAB: UPLOAD ────────────────────────────────────── */}
+            {yoloTab === "upload" && (
+              <>
+                <label
+                  className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center gap-2 cursor-pointer transition-colors ${
+                    detectFile ? "border-yellow-600 bg-yellow-900/10" : "border-slate-700 hover:border-yellow-700"
+                  }`}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const file = e.dataTransfer.files[0];
+                    if (file) { setDetectFile(file); setDetectResult(null); setDetectError(""); }
+                  }}
+                >
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept="image/*,video/mp4,video/avi,video/mov,video/mkv"
+                    onChange={(e) => {
+                      const file = e.target.files[0];
+                      if (file) { setDetectFile(file); setDetectResult(null); setDetectError(""); }
+                    }}
                   />
-                </div>
-              </div>
+                  {detectFile ? (
+                    <div className="text-center">
+                      <p className="text-yellow-400 text-sm font-bold">{detectFile.name}</p>
+                      <p className="text-slate-500 text-xs mt-1">{(detectFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                    </div>
+                  ) : (
+                    <>
+                      <span className="text-4xl">📸</span>
+                      <span className="text-sm text-slate-400 font-medium">Drop gambar atau video di sini</span>
+                      <span className="text-xs text-slate-500">JPG · PNG · MP4 · AVI · MOV</span>
+                    </>
+                  )}
+                </label>
+
+                <button
+                  onClick={handleDetect}
+                  disabled={!detectFile || detecting}
+                  className={`w-full py-3 rounded-xl text-sm font-bold transition-colors flex items-center justify-center gap-2 ${
+                    !detectFile || detecting ? "bg-slate-700 text-slate-500 cursor-not-allowed" : "bg-yellow-600 hover:bg-yellow-500 text-white"
+                  }`}
+                >
+                  {detecting ? (<><span className="flex gap-1">{[0,1,2].map((i)=><span key={i} className="w-1.5 h-1.5 bg-yellow-300 rounded-full animate-bounce" style={{animationDelay:`${i*0.15}s`}}/>)}</span>Mendeteksi...</>) : "⚡ Jalankan YOLO Deteksi"}
+                </button>
+
+                {detectError && <p className="bg-red-900/30 border border-red-700 rounded-xl p-3 text-sm text-red-300">❌ {detectError}</p>}
+                {detectResult && <YoloResultCard result={detectResult} showTime />}
+              </>
             )}
+
+            {/* ── TAB: WEBCAM ────────────────────────────────────── */}
+            {yoloTab === "webcam" && (
+              <>
+                <p className="text-xs text-slate-400">
+                  Browser menangkap frame dari webcam setiap 1 detik → YOLO hitung kendaraan di VPS
+                  {selectedCam ? ` → update jumlah kendaraan di <b>${selectedCam.name}</b> pada peta.` : "."}
+                </p>
+
+                {/* Hidden canvas for capture */}
+                <canvas ref={canvasRef} className="hidden" />
+
+                {/* Video preview */}
+                <div className="relative rounded-xl overflow-hidden bg-black border border-slate-700" style={{ minHeight: 200 }}>
+                  <video
+                    ref={videoRef}
+                    muted
+                    playsInline
+                    className={`w-full rounded-xl transition-opacity duration-300 ${webcamRunning ? "opacity-100" : "opacity-0 absolute"}`}
+                  />
+                  {!webcamRunning && (
+                    <div className="flex flex-col items-center justify-center py-12 text-slate-500 gap-2">
+                      <span className="text-4xl">📷</span>
+                      <span className="text-sm">Webcam belum aktif</span>
+                    </div>
+                  )}
+                  {/* Live count overlay */}
+                  {webcamRunning && webcamResult && (
+                    <div className="absolute top-2 left-2 bg-black/70 rounded-lg px-3 py-1.5 flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                      <span className="text-white text-sm font-black">{webcamResult.vehicle_count}</span>
+                      <span className="text-slate-400 text-xs">kendaraan</span>
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  onClick={webcamRunning ? stopWebcam : startWebcam}
+                  className={`w-full py-3 rounded-xl text-sm font-bold transition-colors ${
+                    webcamRunning ? "bg-red-600 hover:bg-red-500 text-white" : "bg-yellow-600 hover:bg-yellow-500 text-white"
+                  }`}
+                >
+                  {webcamRunning ? "⏹ Stop Webcam" : "▶ Mulai Webcam Live Detection"}
+                </button>
+
+                {webcamError && <p className="bg-red-900/30 border border-red-700 rounded-xl p-3 text-sm text-red-300">❌ {webcamError}</p>}
+                {webcamResult && <YoloResultCard result={webcamResult} live />}
+              </>
+            )}
+
+            {/* ── TAB: STREAM URL ─────────────────────────────────── */}
+            {yoloTab === "stream" && (
+              <>
+                <p className="text-xs text-slate-400">
+                  Masukkan URL stream HLS/RTSP yang bisa diakses dari server VPS. YOLO akan memproses 1 frame/detik.
+                </p>
+
+                <input
+                  value={streamUrl}
+                  onChange={(e) => setStreamUrl(e.target.value)}
+                  disabled={streamRunning}
+                  placeholder="https://example.com/stream.m3u8  atau  rtsp://..."
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2.5 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-yellow-600 disabled:opacity-50"
+                />
+
+                <button
+                  onClick={streamRunning ? stopStream : startStream}
+                  disabled={!streamUrl.trim() && !streamRunning}
+                  className={`w-full py-3 rounded-xl text-sm font-bold transition-colors flex items-center justify-center gap-2 ${
+                    streamRunning
+                      ? "bg-red-600 hover:bg-red-500 text-white"
+                      : !streamUrl.trim()
+                        ? "bg-slate-700 text-slate-500 cursor-not-allowed"
+                        : "bg-yellow-600 hover:bg-yellow-500 text-white"
+                  }`}
+                >
+                  {streamRunning ? (
+                    <><span className="w-2 h-2 rounded-full bg-red-300 animate-pulse" />Live · ⏹ Stop</>
+                  ) : "▶ Mulai Live Detection"}
+                </button>
+
+                {streamError && <p className="bg-red-900/30 border border-red-700 rounded-xl p-3 text-sm text-red-300">❌ {streamError}</p>}
+                {streamResult && <YoloResultCard result={{ vehicle_count: streamResult.count, class_counts: streamResult.class_counts, annotated_image: streamResult.frame }} live />}
+              </>
+            )}
+
           </div>
         </section>
 
