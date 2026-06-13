@@ -1858,6 +1858,29 @@ def detect_frame():
 
 
 # ======================================================
+# 🎬 EXTRACT STREAM URL FROM YOUTUBE (via yt-dlp)
+# ======================================================
+@app.route("/api/youtube-url", methods=["POST"])
+def youtube_url():
+    yt_url = (request.json or {}).get("url", "").strip()
+    if not yt_url:
+        return jsonify({"error": "URL YouTube diperlukan"}), 400
+    try:
+        result = subprocess.run(
+            ["yt-dlp", "-f", "best[ext=mp4]/best", "--get-url", "--no-playlist", yt_url],
+            capture_output=True, text=True, timeout=30,
+        )
+        direct_url = result.stdout.strip().split("\n")[0]
+        if direct_url and direct_url.startswith("http"):
+            return jsonify({"url": direct_url})
+        return jsonify({"error": result.stderr[:300] or "Tidak bisa ekstrak URL"}), 400
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Timeout saat ekstrak URL (>30s)"}), 408
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ======================================================
 # 📡 LIVE DETECT — Stream URL (SSE, 1 frame/s)
 # ======================================================
 @app.route("/api/live-detect")

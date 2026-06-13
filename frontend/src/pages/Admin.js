@@ -153,10 +153,12 @@ export default function Admin() {
   const webcamStream    = useRef(null);
 
   // Stream URL tab
-  const [streamUrl, setStreamUrl]       = useState("");
+  const [streamUrl, setStreamUrl]         = useState("");
+  const [ytInput, setYtInput]             = useState("");
+  const [extracting, setExtracting]       = useState(false);
   const [streamRunning, setStreamRunning] = useState(false);
-  const [streamResult, setStreamResult]  = useState(null);
-  const [streamError, setStreamError]    = useState("");
+  const [streamResult, setStreamResult]   = useState(null);
+  const [streamError, setStreamError]     = useState("");
   const streamSse = useRef(null);
 
   /* ======================================================
@@ -284,6 +286,21 @@ export default function Admin() {
     if (videoRef.current) videoRef.current.srcObject = null;
     setWebcamRunning(false);
   }, []);
+
+  /* ---------- YOUTUBE EXTRACTOR ---------- */
+  const extractYouTube = useCallback(async () => {
+    if (!ytInput.trim()) return;
+    setExtracting(true);
+    setStreamError("");
+    try {
+      const res = await axios.post(`${API_BASE}/api/youtube-url`, { url: ytInput.trim() });
+      setStreamUrl(res.data.url);
+    } catch (e) {
+      setStreamError(e?.response?.data?.error || "Gagal ekstrak URL dari YouTube");
+    } finally {
+      setExtracting(false);
+    }
+  }, [ytInput]);
 
   /* ---------- STREAM URL HANDLERS ---------- */
   const startStream = useCallback(() => {
@@ -640,17 +657,57 @@ export default function Admin() {
             {/* ── TAB: STREAM URL ─────────────────────────────────── */}
             {yoloTab === "stream" && (
               <>
-                <p className="text-xs text-slate-400">
-                  Masukkan URL stream HLS/RTSP yang bisa diakses dari server VPS. YOLO akan memproses 1 frame/detik.
-                </p>
+                {/* YouTube extractor */}
+                <div className="bg-slate-800/60 border border-slate-700 rounded-xl p-4 space-y-2">
+                  <p className="text-[10px] text-yellow-400 font-bold uppercase">📺 Ekstrak dari YouTube Live</p>
+                  <p className="text-[10px] text-slate-500">Paste URL YouTube (live stream) → otomatis ekstrak URL video untuk YOLO</p>
 
-                <input
-                  value={streamUrl}
-                  onChange={(e) => setStreamUrl(e.target.value)}
-                  disabled={streamRunning}
-                  placeholder="https://example.com/stream.m3u8  atau  rtsp://..."
-                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2.5 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-yellow-600 disabled:opacity-50"
-                />
+                  {/* Known streams */}
+                  <div className="flex flex-wrap gap-1 mb-1">
+                    {[
+                      { label: "Bundaran HI", url: "https://www.youtube.com/live/xC8WIFbE1MU" },
+                    ].map((s) => (
+                      <button
+                        key={s.url}
+                        onClick={() => setYtInput(s.url)}
+                        className="text-[10px] bg-slate-700 hover:bg-yellow-900/50 border border-slate-600 hover:border-yellow-700 text-slate-300 px-2 py-0.5 rounded-full transition-colors"
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                    <span className="text-[10px] text-slate-600 self-center">atau paste URL sendiri →</span>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <input
+                      value={ytInput}
+                      onChange={(e) => setYtInput(e.target.value)}
+                      placeholder="https://www.youtube.com/live/..."
+                      className="flex-1 bg-slate-900 border border-slate-600 px-3 py-2 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-yellow-600"
+                    />
+                    <button
+                      onClick={extractYouTube}
+                      disabled={!ytInput.trim() || extracting}
+                      className={`px-3 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
+                        extracting || !ytInput.trim() ? "bg-slate-700 text-slate-500" : "bg-yellow-600 hover:bg-yellow-500 text-white"
+                      }`}
+                    >
+                      {extracting ? "..." : "Ekstrak URL"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Direct stream URL */}
+                <div>
+                  <p className="text-[10px] text-slate-500 mb-1 uppercase font-bold">Atau masukkan URL langsung (HLS/RTSP/MP4)</p>
+                  <input
+                    value={streamUrl}
+                    onChange={(e) => setStreamUrl(e.target.value)}
+                    disabled={streamRunning}
+                    placeholder="https://example.com/stream.m3u8  atau  rtsp://..."
+                    className="w-full bg-slate-800 border border-slate-700 px-3 py-2.5 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-yellow-600 disabled:opacity-50"
+                  />
+                </div>
 
                 <button
                   onClick={streamRunning ? stopStream : startStream}
