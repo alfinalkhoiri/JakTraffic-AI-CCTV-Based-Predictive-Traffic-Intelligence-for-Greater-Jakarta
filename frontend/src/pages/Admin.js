@@ -95,6 +95,12 @@ export default function Admin() {
   const [modelInfo, setModelInfo] = useState(null);
   const [showChat, setShowChat] = useState(false);
 
+  // YOLO detection upload
+  const [detectFile, setDetectFile] = useState(null);
+  const [detectResult, setDetectResult] = useState(null);
+  const [detecting, setDetecting] = useState(false);
+  const [detectError, setDetectError] = useState("");
+
   /* ======================================================
      📡 FETCH CCTV LIST
   ====================================================== */
@@ -148,6 +154,26 @@ export default function Admin() {
   /* ======================================================
      🧩 MODAL HANDLER
   ====================================================== */
+  const handleDetect = async () => {
+    if (!detectFile || detecting) return;
+    setDetecting(true);
+    setDetectError("");
+    setDetectResult(null);
+    const form = new FormData();
+    form.append("file", detectFile);
+    try {
+      const res = await axios.post(`${API_BASE}/api/detect-upload`, form, {
+        headers: { "Content-Type": "multipart/form-data" },
+        timeout: 120000,
+      });
+      setDetectResult(res.data);
+    } catch (err) {
+      setDetectError(err?.response?.data?.error || err.message || "Deteksi gagal");
+    } finally {
+      setDetecting(false);
+    }
+  };
+
   const openAddModal = () => {
     setIsEditing(false);
     setFormData({ name: "", url: "", lat: "", lng: "" });
@@ -331,6 +357,116 @@ export default function Admin() {
             />
           </section>
         )}
+
+        {/* ======== YOLO 11 DETECTION UPLOAD ======== */}
+        <section className="mt-10 rounded-3xl overflow-hidden border border-slate-800">
+          <div className="bg-gradient-to-r from-yellow-900/40 to-orange-900/40 px-5 py-3 flex items-center gap-2">
+            <Cpu size={18} className="text-yellow-400" />
+            <span className="text-sm font-bold text-yellow-300">UJI DETEKSI YOLO 11</span>
+            <span className="ml-auto text-[10px] text-slate-500">Upload gambar/video → YOLO deteksi kendaraan</span>
+          </div>
+
+          <div className="p-5 space-y-3">
+            {/* Drop zone */}
+            <label
+              className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center gap-2 cursor-pointer transition-colors ${
+                detectFile ? "border-yellow-600 bg-yellow-900/10" : "border-slate-700 hover:border-yellow-700"
+              }`}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const file = e.dataTransfer.files[0];
+                if (file) { setDetectFile(file); setDetectResult(null); setDetectError(""); }
+              }}
+            >
+              <input
+                type="file"
+                className="hidden"
+                accept="image/*,video/mp4,video/avi,video/mov,video/mkv"
+                onChange={(e) => {
+                  const file = e.target.files[0];
+                  if (file) { setDetectFile(file); setDetectResult(null); setDetectError(""); }
+                }}
+              />
+              {detectFile ? (
+                <div className="text-center">
+                  <p className="text-yellow-400 text-sm font-bold">{detectFile.name}</p>
+                  <p className="text-slate-500 text-xs mt-1">{(detectFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                </div>
+              ) : (
+                <>
+                  <span className="text-4xl">📸</span>
+                  <span className="text-sm text-slate-400 font-medium">Drop gambar atau video di sini</span>
+                  <span className="text-xs text-slate-500">JPG · PNG · MP4 · AVI · MOV</span>
+                </>
+              )}
+            </label>
+
+            <button
+              onClick={handleDetect}
+              disabled={!detectFile || detecting}
+              className={`w-full py-3 rounded-xl text-sm font-bold transition-colors flex items-center justify-center gap-2 ${
+                !detectFile || detecting
+                  ? "bg-slate-700 text-slate-500 cursor-not-allowed"
+                  : "bg-yellow-600 hover:bg-yellow-500 text-white"
+              }`}
+            >
+              {detecting ? (
+                <>
+                  <span className="flex gap-1">
+                    {[0,1,2].map((i) => (
+                      <span key={i} className="w-1.5 h-1.5 bg-yellow-300 rounded-full animate-bounce"
+                        style={{ animationDelay: `${i * 0.15}s` }} />
+                    ))}
+                  </span>
+                  Mendeteksi...
+                </>
+              ) : (
+                <>⚡ Jalankan YOLO Deteksi</>
+              )}
+            </button>
+
+            {detectError && (
+              <div className="bg-red-900/30 border border-red-700 rounded-xl p-3 text-sm text-red-300">
+                ❌ {detectError}
+              </div>
+            )}
+
+            {detectResult && (
+              <div className="space-y-3">
+                {/* Stats */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div className="bg-yellow-900/30 border border-yellow-800/50 rounded-xl p-3 text-center">
+                    <p className="text-[9px] text-yellow-500 uppercase font-bold">Total Kendaraan</p>
+                    <p className="text-3xl font-black text-yellow-400">{detectResult.vehicle_count}</p>
+                  </div>
+                  {Object.entries(detectResult.class_counts).map(([k, v]) => (
+                    <div key={k} className="bg-slate-800/60 rounded-xl p-3 text-center">
+                      <p className="text-[9px] text-slate-500 uppercase font-bold">{k}</p>
+                      <p className="text-2xl font-black text-blue-400">{v}</p>
+                    </div>
+                  ))}
+                  <div className="bg-slate-800/60 rounded-xl p-3 text-center">
+                    <p className="text-[9px] text-slate-500 uppercase font-bold">Waktu Proses</p>
+                    <p className="text-lg font-black text-slate-300">{detectResult.processing_time_ms}ms</p>
+                  </div>
+                </div>
+
+                {/* Annotated image */}
+                <div className="rounded-xl overflow-hidden border border-slate-700">
+                  <div className="bg-slate-800 px-3 py-1.5 text-[10px] text-slate-400 font-bold uppercase">
+                    Hasil Deteksi YOLO 11
+                  </div>
+                  <img
+                    src={`data:image/jpeg;base64,${detectResult.annotated_image}`}
+                    alt="YOLO Detection Result"
+                    className="w-full"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
 
         {/* ======== TRANSFORMER MODEL INFO ======== */}
         <section className="mt-10 rounded-3xl overflow-hidden border border-slate-800">

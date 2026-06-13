@@ -1831,6 +1831,50 @@ def _collect_openai_stream(resp):
 
 
 # ======================================================
+# 🎯 YOLO DETECT UPLOAD
+# ======================================================
+ALLOWED_DETECT_EXT = {'.jpg', '.jpeg', '.png', '.bmp', '.mp4', '.avi', '.mov', '.mkv', '.webm'}
+
+@app.route("/api/detect-upload", methods=["POST"])
+def detect_upload():
+    if 'file' not in request.files:
+        return jsonify({"error": "Field 'file' tidak ada"}), 400
+
+    f = request.files['file']
+    if not f.filename:
+        return jsonify({"error": "Nama file kosong"}), 400
+
+    ext = os.path.splitext(f.filename)[1].lower()
+    if ext not in ALLOWED_DETECT_EXT:
+        return jsonify({"error": f"Tipe file '{ext}' tidak didukung"}), 400
+
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        f.save(tmp.name)
+        tmp_path = tmp.name
+
+    try:
+        logger.info("detect-upload: processing %s (%s)", f.filename, ext)
+        result = detector.detect_file(tmp_path)
+        if result is None:
+            return jsonify({"error": "File tidak bisa dibaca atau tidak ada frame"}), 500
+        return jsonify({
+            "success": True,
+            "vehicle_count": result["vehicle_count"],
+            "class_counts": result["class_counts"],
+            "annotated_image": result["annotated_image"],
+            "processing_time_ms": result["processing_time_ms"],
+        })
+    except Exception as e:
+        logger.exception("detect-upload error")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+# ======================================================
 # 🧠 MODEL INFO (ADMIN)
 # ======================================================
 @app.route("/api/model-info")
@@ -2014,13 +2058,14 @@ def preview_patch():
                     )
                     logger.info("Attempting to reformat assistant reply to JSON (attempt %d)", attempt+1)
                     resp = requests.post(
-                        OLLAMA_URL,
-                        json={"model": OLLAMA_MODEL, "prompt": reformat_prompt},
+                        SUMOPOD_URL,
+                        headers=_sumopod_headers(),
+                        json={"model": SUMOPOD_MODEL, "messages": [{"role": "user", "content": reformat_prompt}], "stream": False},
                         timeout=30,
                     )
                     if resp.ok:
                         try:
-                            text = resp.json().get('text') if resp.headers.get('Content-Type','').startswith('application/json') else resp.text
+                            text = (resp.json().get("choices") or [{}])[0].get("message", {}).get("content", "")
                         except Exception:
                             text = resp.text
                         reformatted = extract_json(text)
@@ -2436,34 +2481,22 @@ def chat_edit():
                         logger.info("chat-edit MAP COLOR: from_hex %s not found in App.js, falling through to AI", from_hex)
 
         # ── Panggil AI ───────────────────────────────────────────────────────
-        def _call_ollama(p, timeout=90):
-            resp = requests.post(OLLAMA_URL, json={
-                "model": OLLAMA_MODEL,
-                "prompt": p,
-                "format": "json",
-                "stream": True,
-            }, timeout=timeout, stream=True)
+        def _call_sumopod(p, timeout=90):
+            resp = requests.post(
+                SUMOPOD_URL,
+                headers=_sumopod_headers(),
+                json={"model": SUMOPOD_MODEL, "messages": [{"role": "user", "content": p}], "stream": False},
+                timeout=timeout,
+            )
             if not resp.ok:
-                raise RuntimeError(f'Ollama HTTP {resp.status_code}')
-            text = ''
-            for line in resp.iter_lines(decode_unicode=True):
-                if not line:
-                    continue
-                try:
-                    part = json.loads(line)
-                    if isinstance(part, dict):
-                        text += part.get('response') or part.get('text') or ''
-                        if part.get('done'):
-                            break
-                except Exception:
-                    text += line
-            return text
+                raise RuntimeError(f'SumoPod HTTP {resp.status_code}')
+            return (resp.json().get("choices") or [{}])[0].get("message", {}).get("content", "")
 
         try:
-            ai_text = _call_ollama(prompt)
+            ai_text = _call_sumopod(prompt)
         except Exception as e:
-            logger.exception("Ollama call failed in chat-edit")
-            return jsonify({'error': f'Ollama unreachable: {e}'}), 500
+            logger.exception("SumoPod call failed in chat-edit")
+            return jsonify({'error': f'SumoPod unreachable: {e}'}), 500
 
         logger.info("chat-edit AI response (%d chars):\n%s", len(ai_text), ai_text[:800])
         parsed = _extract_json(ai_text)
@@ -2478,7 +2511,7 @@ def chat_edit():
                 "\"changes\":[{\"path\":\"file path\",\"old_text\":\"exact text to replace\",\"new_text\":\"replacement\"}]}"
             )
             try:
-                ai_text2 = _call_ollama(minimal_prompt, timeout=60)
+                ai_text2 = _call_sumopod(minimal_prompt, timeout=60)
                 parsed = _extract_json(ai_text2)
                 if parsed and 'changes' in parsed:
                     logger.info("chat-edit: retry succeeded")
