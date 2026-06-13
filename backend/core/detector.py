@@ -92,3 +92,73 @@ class VideoDetector:
 
         cap.release()
         return max_vehicle
+
+    def detect_file(self, file_path):
+        """
+        Run YOLO 11 on an image or short video file uploaded by admin.
+        Returns dict: {vehicle_count, class_counts, annotated_image (base64 JPEG), processing_time_ms}
+        """
+        import base64
+        start = time.time()
+        ext = os.path.splitext(file_path)[1].lower()
+        is_video = ext in ('.mp4', '.avi', '.mov', '.mkv', '.webm')
+
+        CLASS_NAMES = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
+
+        def _run_inference(frame):
+            frame = cv2.resize(frame, (1020, 576))
+            with _inference_lock:
+                return self.model(frame, classes=[2, 3, 5, 7], conf=0.3, verbose=False)
+
+        def _count_classes(boxes):
+            counts = {}
+            if boxes.cls is not None:
+                for c in boxes.cls.cpu().numpy().astype(int):
+                    name = CLASS_NAMES.get(c, str(c))
+                    counts[name] = counts.get(name, 0) + 1
+            return counts
+
+        def _encode(frame):
+            _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            return base64.b64encode(buf).decode()
+
+        best_count = 0
+        best_annotated = None
+        best_classes = {}
+
+        if is_video:
+            cap = cv2.VideoCapture(file_path)
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25
+            step = max(1, int(fps * 0.5))  # sample every 0.5 s
+            frame_idx = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if frame_idx % step == 0:
+                    results = _run_inference(frame)
+                    count = len(results[0].boxes)
+                    if count > best_count:
+                        best_count = count
+                        best_annotated = results[0].plot()
+                        best_classes = _count_classes(results[0].boxes)
+                frame_idx += 1
+            cap.release()
+        else:
+            frame = cv2.imread(file_path)
+            if frame is None:
+                return None
+            results = _run_inference(frame)
+            best_count = len(results[0].boxes)
+            best_annotated = results[0].plot()
+            best_classes = _count_classes(results[0].boxes)
+
+        if best_annotated is None:
+            return None
+
+        return {
+            'vehicle_count': best_count,
+            'class_counts': best_classes,
+            'annotated_image': _encode(best_annotated),
+            'processing_time_ms': int((time.time() - start) * 1000),
+        }
