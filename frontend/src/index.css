@@ -18,3 +18,28 @@ body {
   border: none !important;
 }
 
+/* ── CCTV Popup styling ── */
+.cctv-popup .leaflet-popup-content-wrapper {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.7) !important;
+  border-radius: 12px !important;
+  overflow: hidden !important;
+  padding: 0 !important;
+}
+.cctv-popup .leaflet-popup-content {
+  margin: 0 !important;
+  width: auto !important;
+  line-height: normal !important;
+}
+.cctv-popup .leaflet-popup-tip-container {
+  display: none !important;
+}
+.cctv-popup .leaflet-popup-close-button {
+  color: #94a3b8 !important;
+  font-size: 18px !important;
+  top: 6px !important;
+  right: 8px !important;
+  z-index: 10 !important;
+}
+
