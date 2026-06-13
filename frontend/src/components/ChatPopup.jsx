@@ -2,9 +2,9 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import axios from "axios";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import ollamaService from "../services/ollama";
+import chatService from "../services/chat";
 
-const apiBase = process.env.REACT_APP_API_URL || "http://localhost:5000";
+const apiBase = process.env.REACT_APP_API_URL || "";
 
 // ─── Komponen renderer markdown untuk pesan assistant ─────────────────────────
 function MarkdownMessage({ text }) {
@@ -360,7 +360,7 @@ export default function ChatPopup({ visible, onClose, onMapCommands }) {
         return copy;
       });
 
-      const ctrl = ollamaService.streamMessage(
+      const ctrl = chatService.streamMessage(
         text,
         history,
         // onChunk — append teks baru
@@ -489,7 +489,7 @@ export default function ChatPopup({ visible, onClose, onMapCommands }) {
 
   // ── RENDER ────────────────────────────────────────────────────────────────
   return (
-    <div className="fixed bottom-20 right-6 z-[2000] w-[400px] h-[560px] bg-slate-900 border border-slate-700 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+    <div className="fixed z-[2000] flex flex-col overflow-hidden bg-slate-900 border border-slate-700 shadow-2xl bottom-0 left-0 right-0 rounded-t-2xl h-[85vh] sm:bottom-20 sm:right-6 sm:left-auto sm:w-[400px] sm:h-[560px] sm:rounded-xl sm:border">
 
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-slate-900">

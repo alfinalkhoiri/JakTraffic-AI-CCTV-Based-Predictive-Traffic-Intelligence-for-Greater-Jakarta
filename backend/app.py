@@ -16,11 +16,13 @@ import shutil
 import tempfile
 import time
 import subprocess
+import random
+import math
 
-# Ollama endpoint (configurable via environment)
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
-# Ollama/OpenClaw model name (configurable via environment)
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:latest")
+# SumoPod (OpenAI-compatible) config
+SUMOPOD_API_KEY = os.environ.get("SUMOPOD_API_KEY", "")
+SUMOPOD_URL     = os.environ.get("SUMOPOD_URL", "https://ai.sumopod.com/v1/chat/completions")
+SUMOPOD_MODEL   = os.environ.get("SUMOPOD_MODEL", "gpt-5-nano")
 
 
 # --- IMPORT INTERNAL ---
@@ -42,6 +44,39 @@ detector = VideoDetector()
 # 🔁 BACKGROUND JOB: MINING DATA REALTIME (PARALLEL)
 # ======================================================
 
+def _simulate_vehicle_count(loc_id: int, ts: datetime = None) -> int:
+    """Generate realistic Jakarta traffic counts when no stream URL is available.
+    Uses time-of-day pattern (WIB = UTC+7) + per-location variation.
+    """
+    now = ts or datetime.utcnow()
+    hour_wib = (now.hour + 7) % 24  # convert UTC → WIB
+
+    # Pola volume kendaraan per jam (Jakarta)
+    hourly_base = {
+        0: 4, 1: 3, 2: 2, 3: 2, 4: 3, 5: 8,
+        6: 18, 7: 38, 8: 42, 9: 32, 10: 22, 11: 20,
+        12: 26, 13: 24, 14: 18, 15: 20, 16: 30,
+        17: 44, 18: 46, 19: 38, 20: 28, 21: 18, 22: 12, 23: 7,
+    }
+    base = hourly_base.get(hour_wib, 10)
+
+    # Smooth interpolation ke jam berikutnya
+    next_base = hourly_base.get((hour_wib + 1) % 24, base)
+    frac = (now.minute % 60) / 60.0
+    interpolated = base + (next_base - base) * frac
+
+    # Per-location offset (beberapa lokasi lebih ramai)
+    loc_factor = 1.0 + math.sin(loc_id * 1.3) * 0.35
+
+    # Noise deterministik per lokasi+menit agar tidak terlalu acak
+    seed = loc_id * 1000 + now.hour * 60 + now.minute // 2
+    rng = random.Random(seed)
+    noise = rng.gauss(0, max(2, interpolated * 0.15))
+
+    count = round(interpolated * loc_factor + noise)
+    return max(0, count)
+
+
 def _process_single_camera(cctv, timestamp):
     """Proses satu kamera: baca stream, hitung kendaraan, simpan ke DB.
     Dipanggil dari thread pool — setiap thread membuka koneksi DB sendiri.
@@ -50,7 +85,12 @@ def _process_single_camera(cctv, timestamp):
     name = cctv.get("name", f"Lokasi {loc_id}")
     stream_url = cctv.get("stream_url")
     try:
-        vehicle_count = detector.get_vehicle_count(stream_url, loc_id)
+        if not stream_url:
+            # Tidak ada URL stream — gunakan simulasi realistis
+            ts_dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S") if isinstance(timestamp, str) else timestamp
+            vehicle_count = _simulate_vehicle_count(loc_id, ts_dt)
+        else:
+            vehicle_count = detector.get_vehicle_count(stream_url, loc_id)
         db_handler.insert_log(loc_id, vehicle_count, timestamp)
         conn = db_handler.get_db_connection()
         cur = conn.cursor()
@@ -645,7 +685,7 @@ def predict_traffic():
 
 
 # ======================================================
-# 🗨️ CHAT / OLLAMA PROXY
+# 🗨️ CHAT API
 # ======================================================
 
 def get_traffic_context_for_chat():
@@ -811,7 +851,7 @@ def get_traffic_context_for_chat():
         peak_text = "\n".join(peak_lines)
 
         context = (
-            f"=== DATA LALU LINTAS BANDUNG (MODE SIMULASI) ===\n"
+            f"=== DATA LALU LINTAS DKI JAKARTA (MODE SIMULASI) ===\n"
             f"Waktu data aktif (last_update): {data_ref_str}\n"
             f"Waktu server saat ini         : {server_now_str}\n"
             f"[PENTING] Sistem berjalan dalam MODE SIMULASI — data historis, bukan real-time.\n"
@@ -849,32 +889,34 @@ def chat_proxy():
 
     # ── EDIT MODE ──────────────────────────────────────────────────────────
     if mode == "edit":
-        prompt = (
-            "You are a careful assistant that outputs concise, structured JSON instructions\n"
-            "for minimal, safe code changes when asked to modify UI or data.\n"
-            "Respond with a plain-text JSON object containing keys: summary, changes.\n"
-            "Each change should be an object with: path (relative to project root), and either 'content'"
-            " (the full file content to write) OR 'patch' (a unified diff). Prefer 'content' when possible.\n\n"
-            f"User: {message}"
-        )
-        # Edit mode: gunakan /api/generate seperti sebelumnya (tidak perlu multi-turn)
+        edit_messages = [
+            {"role": "system", "content": (
+                "You are a careful assistant that outputs concise, structured JSON instructions "
+                "for minimal, safe code changes when asked to modify UI or data. "
+                "Respond with a plain-text JSON object containing keys: summary, changes. "
+                "Each change should be an object with: path (relative to project root), and either 'content' "
+                "(the full file content to write) OR 'patch' (a unified diff). Prefer 'content' when possible."
+            )},
+            {"role": "user", "content": message},
+        ]
         try:
-            logger.info("Attempting Ollama generate request (edit mode) model=%s", OLLAMA_MODEL)
+            logger.info("SumoPod edit mode request model=%s", SUMOPOD_MODEL)
             resp = requests.post(
-                OLLAMA_URL,
-                json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": True},
+                SUMOPOD_URL,
+                headers=_sumopod_headers(),
+                json={"model": SUMOPOD_MODEL, "messages": edit_messages, "stream": True},
                 timeout=90,
                 stream=True,
             )
             if resp.ok:
-                text = _collect_generate_stream(resp)
+                text = _collect_openai_stream(resp)
                 return jsonify({"reply": text})
             else:
-                logger.warning("Ollama returned status %s: %s", resp.status_code, resp.text[:200])
+                logger.warning("SumoPod returned status %s: %s", resp.status_code, resp.text[:200])
         except Exception:
-            logger.exception("Ollama proxy failed (edit mode)")
+            logger.exception("SumoPod proxy failed (edit mode)")
 
-        fallback = {"summary": "Ollama unavailable. Provide instructions offline.", "changes": []}
+        fallback = {"summary": "LLM unavailable. Provide instructions offline.", "changes": []}
         return jsonify({"reply": str(fallback)})
 
     # ── TIME CHANGE INTENT (sebelum LLM) ───────────────────────────────────
@@ -908,61 +950,33 @@ def chat_proxy():
         + (pred_context if pred_context else "")
     )
 
-    if history:
-        # ── MULTI-TURN: gunakan Ollama /api/chat (messages format) ──────
-        ollama_chat_url = OLLAMA_URL.replace("/api/generate", "/api/chat")
-        messages_payload = [{"role": "system", "content": system_content}]
+    # ── CHAT MODE: SumoPod multi-turn ──────────────────────────────────
+    messages_payload = [{"role": "system", "content": system_content}]
+    for turn in history[-10:]:
+        role    = turn.get("role", "user")
+        content = str(turn.get("content", ""))
+        if role in ("user", "assistant") and content:
+            messages_payload.append({"role": role, "content": content})
+    messages_payload.append({"role": "user", "content": message})
 
-        # Tambahkan riwayat percakapan sebelumnya (max 10 terakhir)
-        for turn in history[-10:]:
-            role = turn.get("role", "user")
-            content = str(turn.get("content", ""))
-            if role in ("user", "assistant") and content:
-                messages_payload.append({"role": role, "content": content})
-
-        # Tambahkan pesan saat ini
-        messages_payload.append({"role": "user", "content": message})
-
-        try:
-            logger.info("Attempting Ollama chat request (multi-turn, %d turns) url=%s model=%s",
-                        len(history), ollama_chat_url, OLLAMA_MODEL)
-            resp = requests.post(
-                ollama_chat_url,
-                json={"model": OLLAMA_MODEL, "messages": messages_payload, "stream": True},
-                timeout=90,
-                stream=True,
-            )
-            if resp.ok:
-                text = _collect_chat_stream(resp)
-                return jsonify({"reply": text})
-            else:
-                logger.warning("Ollama /api/chat returned status %s: %s", resp.status_code, resp.text[:200])
-        except Exception:
-            logger.exception("Ollama multi-turn chat failed, falling back to generate")
-        # fall through ke single-turn jika gagal
-
-    # ── SINGLE-TURN FALLBACK: /api/generate ────────────────────────────
-    prompt = (
-        (f"{db_context}\n" if db_context else "")
-        + f"Pertanyaan pengguna: {message}"
-    )
     try:
-        logger.info("Attempting Ollama generate request (single-turn) model=%s", OLLAMA_MODEL)
+        logger.info("SumoPod chat request (%d turns) model=%s", len(history), SUMOPOD_MODEL)
         resp = requests.post(
-            OLLAMA_URL,
-            json={"model": OLLAMA_MODEL, "prompt": prompt, "system": system_content, "stream": True},
+            SUMOPOD_URL,
+            headers=_sumopod_headers(),
+            json={"model": SUMOPOD_MODEL, "messages": messages_payload, "stream": False},
             timeout=90,
-            stream=True,
         )
         if resp.ok:
-            text = _collect_generate_stream(resp)
+            data_j = resp.json()
+            text = (data_j.get("choices") or [{}])[0].get("message", {}).get("content", "")
             return jsonify({"reply": text})
         else:
-            logger.warning("Ollama returned status %s: %s", resp.status_code, resp.text[:200])
+            logger.warning("SumoPod returned status %s: %s", resp.status_code, resp.text[:300])
     except Exception:
-        logger.exception("Ollama proxy failed")
+        logger.exception("SumoPod chat failed")
 
-    return jsonify({"reply": f"(No LLM) Echo: {message}"})
+    return jsonify({"reply": f"(LLM tidak tersedia) Echo: {message}"})
 
 
 # ======================================================
@@ -970,92 +984,185 @@ def chat_proxy():
 # ======================================================
 @app.route("/api/llm-status", methods=["GET"])
 def llm_status():
-    """
-    Ping Ollama untuk cek apakah LLM server aktif.
-    Kembalikan: { online, model, ollama_version, error? }
-    Timeout sangat pendek (3 detik) agar tidak memblok UI.
-    """
-    ollama_base = OLLAMA_URL.replace("/api/generate", "")
+    """Ping SumoPod untuk cek koneksi LLM. Timeout singkat agar tidak memblok UI."""
     try:
-        # /api/tags tersedia di semua versi Ollama — list model yang tersedia
-        resp = requests.get(f"{ollama_base}/api/tags", timeout=3)
+        resp = requests.post(
+            SUMOPOD_URL,
+            headers=_sumopod_headers(),
+            json={"model": SUMOPOD_MODEL, "messages": [{"role": "user", "content": "ping"}], "stream": False},
+            timeout=8,
+        )
         if resp.ok:
-            data = resp.json()
-            models = [m.get("name", "") for m in data.get("models", [])]
-            return jsonify({
-                "online": True,
-                "model": OLLAMA_MODEL,
-                "available_models": models,
-                "model_loaded": OLLAMA_MODEL in models or any(OLLAMA_MODEL.split(":")[0] in m for m in models),
-            })
+            return jsonify({"online": True, "model": SUMOPOD_MODEL, "provider": "SumoPod"})
         else:
-            return jsonify({
-                "online": False,
-                "model": OLLAMA_MODEL,
-                "error": f"Ollama returned HTTP {resp.status_code}",
-            })
-    except requests.exceptions.ConnectionError:
-        return jsonify({
-            "online": False,
-            "model": OLLAMA_MODEL,
-            "error": "Tidak dapat terhubung ke Ollama server",
-        })
+            return jsonify({"online": False, "model": SUMOPOD_MODEL, "error": f"HTTP {resp.status_code}"})
     except requests.exceptions.Timeout:
-        return jsonify({
-            "online": False,
-            "model": OLLAMA_MODEL,
-            "error": "Ollama server timeout",
-        })
+        return jsonify({"online": False, "model": SUMOPOD_MODEL, "error": "SumoPod timeout"})
     except Exception as exc:
-        return jsonify({
-            "online": False,
-            "model": OLLAMA_MODEL,
-            "error": str(exc),
-        })
+        return jsonify({"online": False, "model": SUMOPOD_MODEL, "error": str(exc)})
 
 
 # ======================================================
 # 🗺️  MAP INTENT DETECTION
 # ======================================================
 
-# Mapping nama/alias lokasi → location_id
+# Mapping nama/alias lokasi Jakarta → location_id
 LOCATION_ALIASES = {
-    # Lokasi lama (1-8)
-    "pasteur": 1, "btc": 1, "pasteur btc": 1,
-    "toha": 2, "moh toha": 2, "mohamad toha": 2, "mohammad toha": 2,
-    "pasopati": 3,
-    "yani": 4, "laswi": 4, "yani laswi": 4, "ahmad yani": 4,
-    "dago": 5, "simpang dago": 5,
-    "riau": 6, "banda": 6, "riau banda": 6,
-    "gedebage": 7, "soekarno hatta": 7, "soehatta": 7,
-    "surapati": 8, "gasibu": 8, "surapati gasibu": 8,
-    # Lokasi baru (9-15)
-    "cicadas": 9, "pertigaan cicadas": 9,
-    "braga": 10, "simpang braga": 10,
-    "buah batu": 11, "simpang buah batu": 11,
-    "sukahaji": 12, "persimpangan sukahaji": 12,
-    "garuda": 13, "rajawali": 13, "garuda rajawali": 13, "simpang garuda": 13,
-    "sudirman": 14, "otista": 14, "sudirman otista": 14,
-    "pungkur": 15, "jl pungkur": 15,
+    # ID 1 — Bendungan Hilir
+    "bendungan hilir": 1, "benhil": 1,
+    # ID 2 — Gelora
+    "gelora": 2, "gelora bung karno": 2, "gbk": 2, "senayan gelora": 2,
+    # ID 3 — Tanjung Duren
+    "tanjung duren": 3, "tanjdur": 3,
+    # ID 4 — Tomang
+    "tomang": 4,
+    # ID 5 — Jati Pulo
+    "jati pulo": 5, "jatipulo": 5,
+    # ID 6 — Kemanggisan
+    "kemanggisan": 6,
+    # ID 7 — Menteng
+    "menteng": 7,
+    # ID 8 — Pasar Manggis
+    "pasar manggis": 8, "manggis": 8,
+    # ID 9 — Senayan
+    "senayan": 9,
+    # ID 10 — Kuningan Barat
+    "kuningan barat": 10, "kuningan": 10,
+    # ID 11 — Cikoko
+    "cikoko": 11,
+    # ID 12 — Cengkareng Barat
+    "cengkareng barat": 12, "cengkareng": 12,
+    # ID 14 — Gambir
+    "gambir": 14, "stasiun gambir": 14,
+    # ID 15 — Cempaka Putih
+    "cempaka putih": 15, "cempaka": 15,
+    # ID 16 — Rawa Sari
+    "rawa sari": 16, "rawasari": 16,
+    # ID 17 — Kalideres
+    "kalideres": 17,
+    # ID 18 — Penjaringan
+    "penjaringan": 18,
+    # ID 19 — Meruya Selatan
+    "meruya selatan": 19, "meruya": 19,
+    # ID 20 — Ragunan
+    "ragunan": 20, "kebun binatang": 20,
+    # ID 21 — Lebak Bulus
+    "lebak bulus": 21, "lebakbulus": 21,
+    # ID 22 — Grogol Utara
+    "grogol utara": 22, "grogol": 22,
+    # ID 23 — Jatinegara
+    "jatinegara": 23,
+    # ID 24 — Kampung Melayu
+    "kampung melayu": 24, "kampungmelayu": 24,
+    # ID 25 — Cakung Timur
+    "cakung timur": 25, "cakung": 25,
+    # ID 26 — Kelapa Gading
+    "kelapa gading": 26,
+    # ID 27 — Sunter Jaya
+    "sunter jaya": 27, "sunter": 27,
+    # ID 28 — Sunter Agung
+    "sunter agung": 28,
+    # ID 29 — Tol KG-PG Kayu Putih
+    "kayu putih": 29, "tol kayu putih": 29,
+    # ID 30 — Tol KG-PG Pulo Gadung
+    "pulo gadung": 30, "pulogadung": 30,
+    # ID 31 — Tol KG-PG Rawa Terate
+    "rawa terate": 31, "rawaterate": 31,
+    # ID 32 — Tol KG-PG Cakung 1
+    "cakung 1": 32,
+    # ID 33 — Tol KG-PG Cakung 2
+    "cakung 2": 33,
+    # ID 34 — Tol KG-PG Kelapa Gading
+    "tol kelapa gading": 34,
+    # ID 35 — Tol BCKM Cawang
+    "cawang": 35, "tol cawang": 35, "bckm cawang": 35,
+    # ID 36 — Tol BCKM Duren Sawit
+    "duren sawit": 36, "durensawit": 36,
+    # ID 37 — Tol BCKM Bekasi Barat
+    "bekasi barat": 37, "tol bekasi barat": 37,
+    # ── Bekasi ──────────────────────────────────────────────────────────────
+    # ID 38 — Simpang Lima Bekasi
+    "simpang lima bekasi": 38, "simpang lima": 38, "simpang bekasi": 38,
+    # ID 39 — Jl. Ahmad Yani - Kayuringin
+    "kayuringin": 39, "ahmad yani bekasi": 39, "yani kayuringin": 39,
+    # ID 40 — Jl. Cut Meutia - KH Noer Ali
+    "cut meutia": 40, "noer ali": 40, "kh noer ali": 40,
+    # ID 41 — Jl. Sudirman Bekasi
+    "sudirman bekasi": 41,
+    # ID 42 — Jl. Raya Bekasi - Sumber Arta
+    "sumber arta": 42, "raya bekasi sumber arta": 42,
+    # ID 43 — Tol Bekasi Timur
+    "bekasi timur": 43, "tol bekasi timur": 43,
+    # ID 44 — Jl. Raya Jatiwaringin
+    "jatiwaringin": 44, "raya jatiwaringin": 44,
+    # ID 45 — Harapan Indah
+    "harapan indah": 45, "harapan indah bekasi": 45,
+    # ID 46 — Pondok Gede
+    "pondok gede": 46,
+    # ID 47 — Jl. Raya Babelan
+    "babelan": 47, "raya babelan": 47,
+    # ID 48 — Lingkar Selatan Bekasi
+    "lingkar selatan bekasi": 48, "lingkar selatan": 48,
+    # ID 49 — Kranji Bekasi Barat
+    "kranji": 49, "kranji bekasi": 49,
+    # ID 50 — Jl. Ir. H. Juanda Bekasi
+    "juanda bekasi": 50, "ir juanda": 50, "ir h juanda": 50,
+    # Alias umum untuk "bekasi" → arahkan ke Simpang Lima sebagai pusat
+    "bekasi": 38,
 }
 
-# Koordinat tiap lokasi untuk fly_to — diambil dari current_traffic di DB
+# Koordinat tiap lokasi Jakarta untuk fly_to
 LOCATION_COORDS = {
-    1:  {"lat": -6.892897,          "lng": 107.585703},    # Pasteur BTC
-    2:  {"lat": -6.955547,          "lng": 107.606951},    # Moh Toha
-    3:  {"lat": -6.900097,          "lng": 107.597879},    # Pasopati
-    4:  {"lat": -6.918430,          "lng": 107.631333},    # Yani - Laswi
-    5:  {"lat": -6.884948,          "lng": 107.611335},    # Simpang Dago
-    6:  {"lat": -6.906028,          "lng": 107.616783},    # Riau Banda
-    7:  {"lat": -6.936179,          "lng": 107.692607},    # Gedebage - Soekarno Hatta
-    8:  {"lat": -6.898386,          "lng": 107.616855},    # Surapati - Gasibu
-    9:  {"lat": -6.908789,          "lng": 107.643179},    # Pertigaan Cicadas
-    10: {"lat": -6.921751,          "lng": 107.612017},    # Simpang Braga
-    11: {"lat": -6.947919,          "lng": 107.633314},    # Simpang Buah Batu
-    12: {"lat": -6.926752,          "lng": 107.585528},    # Persimpangan Sukahaji
-    13: {"lat": -6.913498,          "lng": 107.577482},    # Simpang Garuda - Rajawali
-    14: {"lat": -6.920795,          "lng": 107.604097},    # Sudirman Otista
-    15: {"lat": -6.931274,          "lng": 107.612413},    # Jl Pungkur
+    1:  {"lat": -6.2095, "lng": 106.8190},
+    2:  {"lat": -6.2168, "lng": 106.8003},
+    3:  {"lat": -6.1800, "lng": 106.7737},
+    4:  {"lat": -6.1753, "lng": 106.7972},
+    5:  {"lat": -6.1848, "lng": 106.8032},
+    6:  {"lat": -6.1897, "lng": 106.7870},
+    7:  {"lat": -6.1965, "lng": 106.8310},
+    8:  {"lat": -6.2218, "lng": 106.8411},
+    9:  {"lat": -6.2272, "lng": 106.8014},
+    10: {"lat": -6.2336, "lng": 106.8238},
+    11: {"lat": -6.2442, "lng": 106.8513},
+    12: {"lat": -6.1260, "lng": 106.7235},
+    14: {"lat": -6.1793, "lng": 106.8229},
+    15: {"lat": -6.1762, "lng": 106.8676},
+    16: {"lat": -6.1887, "lng": 106.8704},
+    17: {"lat": -6.1473, "lng": 106.7180},
+    18: {"lat": -6.1284, "lng": 106.8050},
+    19: {"lat": -6.2095, "lng": 106.7381},
+    20: {"lat": -6.3076, "lng": 106.8274},
+    21: {"lat": -6.3123, "lng": 106.7814},
+    22: {"lat": -6.2175, "lng": 106.7818},
+    23: {"lat": -6.1963, "lng": 106.9052},
+    24: {"lat": -6.2368, "lng": 106.8709},
+    25: {"lat": -6.1771, "lng": 106.9485},
+    26: {"lat": -6.1519, "lng": 106.8976},
+    27: {"lat": -6.1508, "lng": 106.8794},
+    28: {"lat": -6.1272, "lng": 106.8550},
+    29: {"lat": -6.1754, "lng": 106.9181},
+    30: {"lat": -6.1781, "lng": 106.9182},
+    31: {"lat": -6.1828, "lng": 106.9378},
+    32: {"lat": -6.1849, "lng": 106.9465},
+    33: {"lat": -6.1857, "lng": 106.9507},
+    34: {"lat": -6.1648, "lng": 106.9125},
+    35: {"lat": -6.2427, "lng": 106.8972},
+    36: {"lat": -6.2492, "lng": 106.9370},
+    37: {"lat": -6.2476, "lng": 106.9772},
+    # Bekasi
+    38: {"lat": -6.2392, "lng": 106.9936},
+    39: {"lat": -6.2363, "lng": 107.0057},
+    40: {"lat": -6.2271, "lng": 106.9991},
+    41: {"lat": -6.2213, "lng": 106.9974},
+    42: {"lat": -6.2146, "lng": 107.0131},
+    43: {"lat": -6.2604, "lng": 107.0278},
+    44: {"lat": -6.2549, "lng": 106.9855},
+    45: {"lat": -6.2099, "lng": 107.0001},
+    46: {"lat": -6.2804, "lng": 106.9739},
+    47: {"lat": -6.1874, "lng": 107.0323},
+    48: {"lat": -6.2888, "lng": 106.9901},
+    49: {"lat": -6.2172, "lng": 107.0003},
+    50: {"lat": -6.2303, "lng": 106.9872},
 }
 
 
@@ -1074,7 +1181,7 @@ def _calc_zoom(lat1, lng1, lat2, lng2):
 
 
 def _resolve_location_ids(text):
-    """Cari semua location_id yang disebut dalam teks (case-insensitive)."""
+    """Cari semua location_id yang disebut dalam teks (case-insensitive, longest-match)."""
     text_lower = text.lower()
     found = {}
     for alias in sorted(LOCATION_ALIASES.keys(), key=len, reverse=True):
@@ -1083,6 +1190,96 @@ def _resolve_location_ids(text):
             if loc_id not in found:
                 found[loc_id] = alias
     return list(found.keys())
+
+
+def _match_alias(name):
+    """Cocokkan nama lokasi ke ID via exact atau partial match."""
+    name = name.lower().strip()
+    if name in LOCATION_ALIASES:
+        return LOCATION_ALIASES[name]
+    for alias, lid in sorted(LOCATION_ALIASES.items(), key=lambda x: len(x[0]), reverse=True):
+        if name in alias or alias in name:
+            return lid
+    return None
+
+
+def _extract_route_regex(message):
+    """
+    Coba ekstrak asal/tujuan dari pola regex umum bahasa Indonesia:
+    'dari X ke/menuju Y', 'X ke Y', 'navigasi X ke Y', dsb.
+    Return: (from_id, to_id) atau (None, None).
+    """
+    import re
+    msg = message.lower()
+    patterns = [
+        r'dari\s+(.+?)\s+(?:ke|menuju|menuju ke|ke arah)\s+(.+?)(?:\s*$|[,.])',
+        r'dari\s+(.+?)\s+(?:ke|menuju)\s+(.+)',
+        r'(?:rute|navigasi|arahkan)\s+(?:dari\s+)?(.+?)\s+(?:ke|menuju)\s+(.+)',
+    ]
+    for pat in patterns:
+        m = re.search(pat, msg)
+        if m:
+            from_id = _match_alias(m.group(1).strip())
+            to_id   = _match_alias(m.group(2).strip())
+            if from_id and to_id and from_id != to_id:
+                return from_id, to_id
+    return None, None
+
+
+def _extract_route_llm(message):
+    """
+    Gunakan SumoPod untuk ekstrak titik asal dan tujuan dari kalimat natural.
+    Return: (from_id, to_id) atau (None, None) jika gagal.
+    """
+    if not SUMOPOD_API_KEY:
+        return None, None
+
+    loc_list = "\n".join(f"- {name}" for name in sorted(set(LOCATION_ALIASES.keys())))
+    prompt = (
+        "Kamu adalah parser intent rute untuk sistem traffic Jakarta.\n"
+        "Daftar lokasi yang tersedia:\n"
+        f"{loc_list}\n\n"
+        "Dari pesan pengguna berikut, identifikasi titik ASAL dan TUJUAN rute.\n"
+        "Cocokkan dengan nama dari daftar di atas (bisa sebagian).\n"
+        "Jawab HANYA dengan JSON valid, tidak ada teks lain:\n"
+        '{"from": "<nama_lokasi_atau_null>", "to": "<nama_lokasi_atau_null>"}\n\n'
+        f"Pesan: {message}"
+    )
+    try:
+        resp = requests.post(
+            SUMOPOD_URL,
+            headers=_sumopod_headers(),
+            json={"model": SUMOPOD_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False},
+            timeout=15,
+        )
+        if not resp.ok:
+            return None, None
+        content = (resp.json().get("choices") or [{}])[0].get("message", {}).get("content", "")
+        # strip markdown code fences if present
+        content = content.strip().strip("```json").strip("```").strip()
+        parsed  = json.loads(content)
+        from_name = (parsed.get("from") or "").lower().strip()
+        to_name   = (parsed.get("to")   or "").lower().strip()
+
+        from_id = LOCATION_ALIASES.get(from_name)
+        to_id   = LOCATION_ALIASES.get(to_name)
+
+        # fuzzy fallback: partial match
+        if not from_id and from_name:
+            for alias, lid in LOCATION_ALIASES.items():
+                if from_name in alias or alias in from_name:
+                    from_id = lid
+                    break
+        if not to_id and to_name:
+            for alias, lid in LOCATION_ALIASES.items():
+                if to_name in alias or alias in to_name:
+                    to_id = lid
+                    break
+
+        return from_id, to_id
+    except Exception as e:
+        logger.warning("_extract_route_llm failed: %s", e)
+        return None, None
 
 
 def _get_all_predictions():
@@ -1346,8 +1543,13 @@ def detect_map_actions(message):
     is_compare = any(kw in msg for kw in compare_keywords)
 
     # ── Deteksi intent RUTE ───────────────────────────────────────────────────
-    route_keywords = ["dari", "menuju", "ke ", "rute", "jalan ke", "arah"]
-    is_route = any(kw in msg for kw in route_keywords) and len(mentioned_ids) >= 2
+    route_keywords = [
+        "dari", "menuju", "ke ", "rute", "jalan ke", "arah",
+        "navigasi", "navigate", "route", "buat rute", "tampilkan rute",
+        "arahkan", "perjalanan dari", "pergi ke", "tuju", "set rute",
+        "direction", "perjalanan ke",
+    ]
+    is_route = any(kw in msg for kw in route_keywords)
 
     # ── Deteksi PALING PADAT / PALING SEPI ───────────────────────────────────
     is_busiest = re.search(
@@ -1403,33 +1605,48 @@ def detect_map_actions(message):
         return actions
 
     # ── RUTE ─────────────────────────────────────────────────────────────────
-    if is_route and len(mentioned_ids) >= 2:
-        start_id = mentioned_ids[0]
-        end_id   = mentioned_ids[1]
-        start_coord = LOCATION_COORDS.get(start_id, {})
-        end_coord   = LOCATION_COORDS.get(end_id,   {})
-        actions.append({
-            "type":       "set_route",
-            "start_id":   start_id,
-            "end_id":     end_id,
-            "start_lat":  start_coord.get("lat"),
-            "start_lng":  start_coord.get("lng"),
-            "end_lat":    end_coord.get("lat"),
-            "end_lng":    end_coord.get("lng"),
-        })
-        # Zoom ke titik tengah rute dengan zoom dinamis
-        if start_coord and end_coord:
-            zoom = _calc_zoom(
-                start_coord["lat"], start_coord["lng"],
-                end_coord["lat"],   end_coord["lng"],
-            )
+    if is_route:
+        start_id, end_id = None, None
+
+        if len(mentioned_ids) >= 2:
+            # Rule-based: 2+ lokasi ditemukan langsung dari teks
+            # Coba regex dulu agar urutan asal→tujuan tepat
+            rx_from, rx_to = _extract_route_regex(message)
+            if rx_from and rx_to:
+                start_id, end_id = rx_from, rx_to
+            else:
+                start_id, end_id = mentioned_ids[0], mentioned_ids[1]
+        else:
+            # Regex extraction untuk pola "dari X ke Y"
+            start_id, end_id = _extract_route_regex(message)
+            if not (start_id and end_id):
+                # Fallback terakhir: tanya LLM untuk ekstrak lokasi
+                start_id, end_id = _extract_route_llm(message)
+
+        if start_id and end_id:
+            start_coord = LOCATION_COORDS.get(start_id, {})
+            end_coord   = LOCATION_COORDS.get(end_id,   {})
             actions.append({
-                "type": "fly_to",
-                "lat":  (start_coord["lat"] + end_coord["lat"]) / 2,
-                "lng":  (start_coord["lng"] + end_coord["lng"]) / 2,
-                "zoom": zoom,
+                "type":       "set_route",
+                "start_id":   start_id,
+                "end_id":     end_id,
+                "start_lat":  start_coord.get("lat"),
+                "start_lng":  start_coord.get("lng"),
+                "end_lat":    end_coord.get("lat"),
+                "end_lng":    end_coord.get("lng"),
             })
-        return actions
+            if start_coord and end_coord:
+                zoom = _calc_zoom(
+                    start_coord["lat"], start_coord["lng"],
+                    end_coord["lat"],   end_coord["lng"],
+                )
+                actions.append({
+                    "type": "fly_to",
+                    "lat":  (start_coord["lat"] + end_coord["lat"]) / 2,
+                    "lng":  (start_coord["lng"] + end_coord["lng"]) / 2,
+                    "zoom": zoom,
+                })
+            return actions
 
     # ── PERBANDINGAN (≥2 lokasi) ──────────────────────────────────────────────
     if is_compare and len(mentioned_ids) >= 2:
@@ -1467,16 +1684,7 @@ def detect_map_actions(message):
 # ======================================================
 @app.route("/api/chat-stream", methods=["POST"])
 def chat_stream():
-    """
-    Endpoint streaming SSE.
-    Mengirim chunk teks dari Ollama langsung ke frontend sebagai Server-Sent Events,
-    sehingga React bisa menampilkan typewriter effect secara real-time.
-
-    Format SSE per event:
-      data: {"chunk": "..."}\n\n       <- teks parsial
-      data: {"done": true}\n\n         <- selesai
-      data: {"error": "..."}\n\n       <- jika ada error
-    """
+    """Streaming SSE endpoint. Format: data: {chunk/done/error/actions}"""
     from flask import Response, stream_with_context
 
     data     = request.json or {}
@@ -1525,8 +1733,6 @@ def chat_stream():
         return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
     def _generate_stream():
-        ollama_chat_url = OLLAMA_URL.replace("/api/generate", "/api/chat")
-
         messages_payload = [{"role": "system", "content": system_content}]
         for turn in history[-10:]:
             role    = turn.get("role", "user")
@@ -1536,65 +1742,34 @@ def chat_stream():
         messages_payload.append({"role": "user", "content": message})
 
         try:
-            logger.info("SSE stream: %d turns, model=%s", len(history), OLLAMA_MODEL)
+            logger.info("SSE stream via SumoPod: %d turns, model=%s", len(history), SUMOPOD_MODEL)
             resp = requests.post(
-                ollama_chat_url,
-                json={"model": OLLAMA_MODEL, "messages": messages_payload, "stream": True},
+                SUMOPOD_URL,
+                headers=_sumopod_headers(),
+                json={"model": SUMOPOD_MODEL, "messages": messages_payload, "stream": True},
                 timeout=120,
                 stream=True,
             )
 
             if not resp.ok:
-                # Fallback ke /api/generate
-                logger.warning("SSE: /api/chat failed (%s), falling back to /api/generate", resp.status_code)
-                prompt = (
-                    (f"{db_context}\n" if db_context else "")
-                    + f"Pertanyaan pengguna: {message}"
-                )
-                resp = requests.post(
-                    OLLAMA_URL,
-                    json={"model": OLLAMA_MODEL, "prompt": prompt, "system": system_content, "stream": True},
-                    timeout=120,
-                    stream=True,
-                )
-                if not resp.ok:
-                    yield _sse({"error": f"Ollama error: {resp.status_code}"})
-                    return
-                for line in resp.iter_lines(decode_unicode=True):
-                    if not line:
-                        continue
-                    try:
-                        part = json.loads(line)
-                    except Exception:
-                        continue
-                    chunk = part.get("response", "")
-                    if chunk:
-                        yield _sse({"chunk": chunk})
-                    if part.get("done"):
-                        break
-                # Emit map actions SEBELUM done agar frontend bisa membacanya
-                map_actions = detect_map_actions(message)
-                if map_actions:
-                    yield _sse({"actions": map_actions})
-                yield _sse({"done": True})
+                yield _sse({"error": f"SumoPod error: {resp.status_code} — {resp.text[:200]}"})
                 return
 
-            # Stream dari /api/chat (messages format)
+            # Parse OpenAI SSE format: "data: {...}" lines
             for line in resp.iter_lines(decode_unicode=True):
-                if not line:
+                if not line or not line.startswith("data:"):
                     continue
+                raw = line[5:].strip()
+                if raw == "[DONE]":
+                    break
                 try:
-                    part = json.loads(line)
+                    part  = json.loads(raw)
+                    chunk = (part.get("choices") or [{}])[0].get("delta", {}).get("content", "")
+                    if chunk:
+                        yield _sse({"chunk": chunk})
                 except Exception:
                     continue
-                msg   = part.get("message", {})
-                chunk = (msg.get("content", "") if isinstance(msg, dict) else "") or part.get("response", "")
-                if chunk:
-                    yield _sse({"chunk": chunk})
-                if part.get("done"):
-                    break
 
-            # Emit map actions SEBELUM done agar frontend bisa membacanya
             map_actions = detect_map_actions(message)
             if map_actions:
                 yield _sse({"actions": map_actions})
@@ -1614,72 +1789,38 @@ def chat_stream():
     )
 
 
-def _collect_generate_stream(resp):
-    """Parse streaming response dari Ollama /api/generate."""
-    text = ""
-    try:
-        for line in resp.iter_lines(decode_unicode=True):
-            if not line:
-                continue
-            try:
-                part = json.loads(line)
-            except Exception:
-                text += line
-                continue
-            if isinstance(part, dict):
-                chunk = part.get("response") or part.get("text") or part.get("reply") or ""
-                if chunk:
-                    text += chunk
-                if part.get("done") or part.get("done_reason") == "stop":
-                    break
-            else:
-                text += str(part)
-    except Exception:
-        pass
-    if not text:
-        try:
-            j = resp.json()
-            text = j.get("text") or j.get("reply") or ""
-            if not text and isinstance(j.get("choices"), list) and j["choices"]:
-                text = j["choices"][0].get("text", "")
-        except Exception:
-            text = resp.text
-    return text
+def _sumopod_headers():
+    return {
+        "Authorization": f"Bearer {SUMOPOD_API_KEY}",
+        "Content-Type": "application/json",
+    }
 
 
-def _collect_chat_stream(resp):
-    """Parse streaming response dari Ollama /api/chat (messages format).
-    Format per baris: {"message": {"role": "assistant", "content": "..."}, "done": false}
+def _collect_openai_stream(resp):
+    """Parse OpenAI-compatible SSE streaming response.
+    Format: data: {"choices":[{"delta":{"content":"..."},"finish_reason":null}]}
     """
     text = ""
     try:
         for line in resp.iter_lines(decode_unicode=True):
-            if not line:
+            if not line or not line.startswith("data:"):
                 continue
+            raw = line[5:].strip()
+            if raw == "[DONE]":
+                break
             try:
-                part = json.loads(line)
-            except Exception:
-                text += line
-                continue
-            if isinstance(part, dict):
-                # /api/chat format
-                msg = part.get("message", {})
-                chunk = msg.get("content", "") if isinstance(msg, dict) else ""
-                # fallback: /api/generate format (jika model lama)
-                if not chunk:
-                    chunk = part.get("response") or part.get("text") or ""
+                part = json.loads(raw)
+                chunk = (part.get("choices") or [{}])[0].get("delta", {}).get("content", "")
                 if chunk:
                     text += chunk
-                if part.get("done") or part.get("done_reason") == "stop":
-                    break
-            else:
-                text += str(part)
+            except Exception:
+                continue
     except Exception:
         pass
     if not text:
         try:
             j = resp.json()
-            text = (j.get("message", {}) or {}).get("content") or j.get("text") or j.get("reply") or ""
+            text = (j.get("choices") or [{}])[0].get("message", {}).get("content", "") or j.get("text", "") or j.get("reply", "")
         except Exception:
             text = resp.text
     return text
