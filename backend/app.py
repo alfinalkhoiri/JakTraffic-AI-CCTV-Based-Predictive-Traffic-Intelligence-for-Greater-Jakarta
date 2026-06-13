@@ -1831,6 +1831,103 @@ def _collect_openai_stream(resp):
 
 
 # ======================================================
+# 📷 DETECT SINGLE FRAME (Webcam — browser sends JPEG)
+# ======================================================
+@app.route("/api/detect-frame", methods=["POST"])
+def detect_frame():
+    camera_id = request.form.get("camera_id", type=int)
+    if 'frame' not in request.files:
+        return jsonify({"error": "Field 'frame' tidak ada"}), 400
+
+    raw_bytes = request.files['frame'].read()
+    result = detector.detect_frame_bytes(raw_bytes)
+    if result is None:
+        return jsonify({"error": "Frame tidak valid"}), 400
+
+    if camera_id:
+        try:
+            db_handler.update_traffic_data(camera_id, result['vehicle_count'])
+        except Exception as e:
+            logger.warning("detect-frame DB update failed: %s", e)
+
+    return jsonify({
+        "vehicle_count": result["vehicle_count"],
+        "class_counts":  result["class_counts"],
+        "annotated_image": result["annotated_image"],
+    })
+
+
+# ======================================================
+# 📡 LIVE DETECT — Stream URL (SSE, 1 frame/s)
+# ======================================================
+@app.route("/api/live-detect")
+def live_detect():
+    from flask import Response, stream_with_context
+    from core.detector import _inference_lock
+    import cv2 as _cv2, base64 as _b64
+
+    stream_url = request.args.get("url", "")
+    camera_id  = request.args.get("camera_id", type=int)
+    if not stream_url:
+        return jsonify({"error": "Parameter 'url' diperlukan"}), 400
+
+    CLASS_NAMES = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
+
+    def generate():
+        cap = _cv2.VideoCapture(stream_url)
+        if not cap.isOpened():
+            yield f"data: {json.dumps({'error': 'Tidak bisa membuka stream URL'})}\n\n"
+            return
+
+        logger.info("live-detect started: url=%s cam=%s", stream_url[:80], camera_id)
+        last_process = 0.0
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    yield f"data: {json.dumps({'error': 'Stream terputus'})}\n\n"
+                    break
+                now = time.time()
+                if now - last_process < 1.0:
+                    continue
+                last_process = now
+
+                frame = _cv2.resize(frame, (1020, 576))
+                with _inference_lock:
+                    results = detector.model(frame, classes=[2, 3, 5, 7], conf=0.3, verbose=False)
+
+                count = len(results[0].boxes)
+                class_counts = {}
+                if results[0].boxes.cls is not None:
+                    for c in results[0].boxes.cls.cpu().numpy().astype(int):
+                        name = CLASS_NAMES.get(c, str(c))
+                        class_counts[name] = class_counts.get(name, 0) + 1
+
+                annotated = results[0].plot()
+                _, buf = _cv2.imencode('.jpg', annotated, [_cv2.IMWRITE_JPEG_QUALITY, 75])
+                b64 = _b64.b64encode(buf).decode()
+
+                if camera_id:
+                    try:
+                        db_handler.update_traffic_data(camera_id, count)
+                    except Exception:
+                        pass
+
+                yield f"data: {json.dumps({'count': count, 'class_counts': class_counts, 'frame': b64})}\n\n"
+
+        except GeneratorExit:
+            logger.info("live-detect: client disconnected")
+        finally:
+            cap.release()
+
+    return Response(
+        stream_with_context(generate()),
+        content_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ======================================================
 # 🎯 YOLO DETECT UPLOAD
 # ======================================================
 ALLOWED_DETECT_EXT = {'.jpg', '.jpeg', '.png', '.bmp', '.mp4', '.avi', '.mov', '.mkv', '.webm'}

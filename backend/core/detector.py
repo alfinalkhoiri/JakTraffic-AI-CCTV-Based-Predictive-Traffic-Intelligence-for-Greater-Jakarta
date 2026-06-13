@@ -162,3 +162,30 @@ class VideoDetector:
             'annotated_image': _encode(best_annotated),
             'processing_time_ms': int((time.time() - start) * 1000),
         }
+
+    def detect_frame_bytes(self, raw_bytes):
+        """Run YOLO on raw JPEG bytes sent from a browser webcam frame."""
+        import base64
+        data = np.frombuffer(raw_bytes, np.uint8)
+        frame = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        if frame is None:
+            return None
+        frame = cv2.resize(frame, (1020, 576))
+        with _inference_lock:
+            results = self.model(frame, classes=[2, 3, 5, 7], conf=0.3, verbose=False)
+
+        CLASS_NAMES = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
+        count = len(results[0].boxes)
+        class_counts = {}
+        if results[0].boxes.cls is not None:
+            for c in results[0].boxes.cls.cpu().numpy().astype(int):
+                name = CLASS_NAMES.get(c, str(c))
+                class_counts[name] = class_counts.get(name, 0) + 1
+
+        annotated = results[0].plot()
+        _, buf = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        return {
+            'vehicle_count': count,
+            'class_counts': class_counts,
+            'annotated_image': base64.b64encode(buf).decode(),
+        }
