@@ -58,6 +58,20 @@ BACKUP_COORDS = {
     35: {"lat": -6.2427, "lng": 106.8972, "name": "Tol BCKM - Cawang",        "road_type": "toll"},
     36: {"lat": -6.2492, "lng": 106.9370, "name": "Tol BCKM - Duren Sawit",   "road_type": "toll"},
     37: {"lat": -6.2476, "lng": 106.9772, "name": "Tol BCKM - Bekasi Barat",  "road_type": "toll"},
+    # Bekasi
+    38: {"lat": -6.2392, "lng": 106.9936, "name": "Simpang Lima Bekasi",           "road_type": "city"},
+    39: {"lat": -6.2363, "lng": 107.0057, "name": "Jl. Ahmad Yani - Kayuringin",   "road_type": "city"},
+    40: {"lat": -6.2271, "lng": 106.9991, "name": "Jl. Cut Meutia - KH Noer Ali",  "road_type": "city"},
+    41: {"lat": -6.2213, "lng": 106.9974, "name": "Jl. Sudirman Bekasi",           "road_type": "city"},
+    42: {"lat": -6.2146, "lng": 107.0131, "name": "Jl. Raya Bekasi - Sumber Arta", "road_type": "city"},
+    43: {"lat": -6.2604, "lng": 107.0278, "name": "Tol Bekasi Timur",              "road_type": "toll"},
+    44: {"lat": -6.2549, "lng": 106.9855, "name": "Jl. Raya Jatiwaringin",         "road_type": "city"},
+    45: {"lat": -6.2099, "lng": 107.0001, "name": "Harapan Indah Bekasi",          "road_type": "city"},
+    46: {"lat": -6.2804, "lng": 106.9739, "name": "Pondok Gede",                   "road_type": "city"},
+    47: {"lat": -6.1874, "lng": 107.0323, "name": "Jl. Raya Babelan",              "road_type": "city"},
+    48: {"lat": -6.2888, "lng": 106.9901, "name": "Jl. Lingkar Selatan Bekasi",    "road_type": "city"},
+    49: {"lat": -6.2172, "lng": 107.0003, "name": "Kranji - Bekasi Barat",         "road_type": "city"},
+    50: {"lat": -6.2303, "lng": 106.9872, "name": "Jl. Ir. H. Juanda Bekasi",      "road_type": "city"},
 }
 
 # ===============================
@@ -78,7 +92,7 @@ def get_all_cctv_status():
 
     try:
         cur.execute("""
-            SELECT ct.*, cl.stream_url, cl.road_type
+            SELECT ct.*, cl.stream_url, cl.road_type, cl.preview_url
             FROM current_traffic ct
             LEFT JOIN cctv_locations cl ON ct.id = cl.id
             ORDER BY ct.id

@@ -27,10 +27,11 @@ import {
 import axios from "axios";
 import { Link } from "react-router-dom";
 import { Route, AlertTriangle, Clock, TrendingUp } from "lucide-react";
-
-const API = "http://localhost:5000";
 import ChatButton from "./components/ChatButton";
 import ChatPopup from "./components/ChatPopup";
+import CCTVPreview from "./components/CCTVPreview";
+
+const API = process.env.REACT_APP_API_URL || "";
 
 /* =============== Helper 1 Jam Predik ================= */
 const predictionStyle = (status) => {
@@ -348,7 +349,8 @@ export default function App() {
   const [highlighted, setHighlighted]   = useState([]);   // array location_id — pin biru chatbot
   const [mapFlyTo,    setMapFlyTo]      = useState(null); // { lat, lng } — auto-zoom
   const [compareMode, setCompareMode]   = useState(null); // { ids:[1,5] } — sidebar compare
-  const [compareData, setCompareData]   = useState({});   // { [id]: { cctv, history, nowVsUsual } }
+  const [compareData, setCompareData]   = useState({});
+  const [showPanel, setShowPanel]        = useState(false);   // { [id]: { cctv, history, nowVsUsual } }
 
   /* ================= LOAD CCTV ================= */
   useEffect(() => {
@@ -753,7 +755,7 @@ export default function App() {
 
   return (
     <>
-    <div className="flex h-screen bg-slate-950 text-white">
+    <div className="flex h-screen bg-slate-950 text-white overflow-hidden">
       {/* ================= MAP ================= */}
       <div className="flex-1 relative">
         {eta && (
@@ -970,10 +972,29 @@ export default function App() {
             <span>CCTV Jalan Tol</span>
           </div>
         </div>
+
+        {/* Mobile backdrop */}
+        {showPanel && (
+          <div
+            className="md:hidden absolute inset-0 bg-black/30 z-[1400]"
+            onClick={() => setShowPanel(false)}
+          />
+        )}
+        {/* Mobile panel toggle */}
+        <button
+          onClick={() => setShowPanel(p => !p)}
+          className="md:hidden absolute bottom-6 left-1/2 -translate-x-1/2 z-[1100] bg-slate-900/90 backdrop-blur-sm border border-slate-700 text-white text-xs font-bold px-5 py-2.5 rounded-full shadow-xl flex items-center gap-2"
+        >
+          {showPanel ? "✕ Tutup" : "📊 Info"}
+        </button>
       </div>
 
       {/* ================= SIDEBAR ================= */}
-      <div className="w-[36%] p-6 border-l border-slate-800 overflow-y-auto">
+      <div className={`fixed bottom-0 left-0 right-0 h-[78vh] z-[1500] bg-slate-950 border-t border-slate-700 rounded-t-2xl overflow-y-auto px-4 pt-2 pb-4 transition-transform duration-300 ease-in-out md:static md:w-[36%] md:h-auto md:overflow-y-auto md:p-6 md:border-t-0 md:border-l md:border-slate-800 md:rounded-none md:translate-y-0 md:flex-none ${showPanel ? "translate-y-0" : "translate-y-full"}`}>
+        {/* Mobile drag handle */}
+        <div className="md:hidden flex justify-center mb-3 pt-1">
+          <div className="w-10 h-1 bg-slate-700 rounded-full" />
+        </div>
         {/* PREDICTION TIME SELECTOR */}
         <div className="mb-5 bg-slate-900 p-3 rounded-xl border border-slate-800">
           <div className="flex items-center gap-2 mb-2">
@@ -1209,6 +1230,9 @@ export default function App() {
           <>
             <h2 className="text-2xl font-bold mb-1">{selected.name}</h2>
             <p className="text-slate-400 mb-4">{selected.vehicles} kendaraan saat ini</p>
+
+            {/* Live CCTV Preview */}
+            <CCTVPreview previewUrl={selected.preview_url} name={selected.name} />
 
             {nowVsUsual && (
               <div className="grid grid-cols-2 gap-4 mb-4">
