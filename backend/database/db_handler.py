@@ -112,6 +112,9 @@ def get_all_cctv_status():
             if data.get("road_type") is None:
                 data["road_type"] = BACKUP_COORDS.get(cctv_id, {}).get("road_type", "city")
 
+            # Jalan tol tidak memiliki lampu merah — rekomendasi sinyal tidak berlaku
+            data["has_signal"] = data.get("road_type") != "toll"
+
             results.append(data)
 
         return results

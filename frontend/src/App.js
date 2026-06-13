@@ -29,7 +29,7 @@ import { Link } from "react-router-dom";
 import { Route, AlertTriangle, Clock, TrendingUp } from "lucide-react";
 import ChatButton from "./components/ChatButton";
 import ChatPopup from "./components/ChatPopup";
-import CCTVPreview from "./components/CCTVPreview";
+import MapPopup from "./components/MapPopup";
 
 const API = process.env.REACT_APP_API_URL || "";
 
@@ -112,6 +112,67 @@ const getTrafficColor = (vehicles) => {
   if (vehicles > 15) return "#f97316"; // oranye - ramai
   return "#22c55e"; // hijau - lancar
 };
+
+/* =============== Signal Recommendation ================= */
+const getSignalRec = (vehicles) => {
+  if (vehicles > 40) return {
+    light: "green",
+    green: 90, red: 30,
+    label: "Perpanjang Fase Hijau",
+    note: "Volume tinggi — prioritaskan pergerakan kendaraan",
+    priority: "TINGGI",
+    color: "text-red-400",
+    bg: "bg-red-500/10 border-red-500/30",
+    dot: "#ef4444",
+  };
+  if (vehicles > 20) return {
+    light: "yellow",
+    green: 60, red: 45,
+    label: "Pertahankan Siklus Normal",
+    note: "Volume sedang — pertahankan siklus standar",
+    priority: "NORMAL",
+    color: "text-yellow-400",
+    bg: "bg-yellow-500/10 border-yellow-500/30",
+    dot: "#f59e0b",
+  };
+  return {
+    light: "red",
+    green: 30, red: 60,
+    label: "Kurangi Fase Hijau",
+    note: "Volume rendah — alihkan waktu ke jalur persimpangan",
+    priority: "RENDAH",
+    color: "text-emerald-400",
+    bg: "bg-emerald-500/10 border-emerald-500/30",
+    dot: "#22c55e",
+  };
+};
+
+/* =============== Traffic Light Component ================= */
+function TrafficLight({ active }) {
+  const lights = [
+    { key: "red",    hex: "#ef4444" },
+    { key: "yellow", hex: "#f59e0b" },
+    { key: "green",  hex: "#22c55e" },
+  ];
+  return (
+    <div style={{
+      background: "#111827", border: "2px solid #374151",
+      borderRadius: 10, padding: "10px 12px",
+      display: "inline-flex", flexDirection: "column",
+      gap: 7, alignItems: "center", flexShrink: 0,
+    }}>
+      {lights.map(l => (
+        <div key={l.key} style={{
+          width: 22, height: 22, borderRadius: "50%",
+          background: l.key === active ? l.hex : "#1e293b",
+          boxShadow: l.key === active ? `0 0 10px ${l.hex}, 0 0 20px ${l.hex}60` : "none",
+          border: `2px solid ${l.key === active ? l.hex : "#374151"}`,
+          transition: "all 0.4s ease",
+        }} />
+      ))}
+    </div>
+  );
+}
 
 /* =============== Route Step Helpers ================= */
 const MANEUVER_ICON = {
@@ -946,15 +1007,20 @@ export default function App() {
                 position={[c.lat, c.lng]}
                 icon={isToll ? tollIcon(markerStatus, isHighlighted) : pulseIcon(markerStatus, isHighlighted)}
                 eventHandlers={{ click: () => {
-                  setSelected(c);
                   setCompareMode(null);
                   setHighlighted([]);
                 }}}
               >
-                <Popup>
-                  <b>{c.name}</b>
-                  {isToll && <span style={{fontSize:"10px",background:"#f59e0b",color:"#000",borderRadius:"3px",padding:"0 4px",marginLeft:"4px"}}>TOL</span>}
-                  <br />{ev} kendaraan{predictionMode !== "now" ? " (prediksi)" : ""}
+                <Popup className="cctv-popup" maxWidth={270} minWidth={270} autoPan>
+                  <MapPopup
+                    cam={c}
+                    effectiveVehicles={ev}
+                    onSelectDetail={() => {
+                      setSelected(c);
+                      setCompareMode(null);
+                      setHighlighted([]);
+                    }}
+                  />
                 </Popup>
               </Marker>
             );
@@ -1231,9 +1297,6 @@ export default function App() {
             <h2 className="text-2xl font-bold mb-1">{selected.name}</h2>
             <p className="text-slate-400 mb-4">{selected.vehicles} kendaraan saat ini</p>
 
-            {/* Live CCTV Preview */}
-            <CCTVPreview previewUrl={selected.preview_url} name={selected.name} />
-
             {nowVsUsual && (
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div className="bg-slate-900 p-4 rounded-xl">
@@ -1255,6 +1318,49 @@ export default function App() {
               </div>
               <p className="text-xs text-slate-400 mt-1">{decisionNote}</p>
             </div>
+
+            {/* ── REKOMENDASI SINYAL ADAPTIF — hanya jika ada lampu merah ── */}
+            {selected.has_signal ? (() => {
+              const rec = getSignalRec(selected.vehicles);
+              return (
+                <div className={`mb-4 p-4 rounded-xl border ${rec.bg}`}>
+                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-3">
+                    🚦 Rekomendasi Sinyal Adaptif
+                  </p>
+                  <div className="flex items-center gap-4">
+                    <TrafficLight active={rec.light} />
+                    <div className="flex-1 min-w-0">
+                      <p className={`font-bold text-sm ${rec.color}`}>{rec.label}</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">{rec.note}</p>
+                      <div className="flex gap-3 mt-2">
+                        <div className="text-center">
+                          <p className="text-[9px] text-slate-500 uppercase">Hijau</p>
+                          <p className="text-lg font-black text-emerald-400">{rec.green}<span className="text-xs font-normal text-slate-500">s</span></p>
+                        </div>
+                        <div className="w-px bg-slate-700" />
+                        <div className="text-center">
+                          <p className="text-[9px] text-slate-500 uppercase">Merah</p>
+                          <p className="text-lg font-black text-red-400">{rec.red}<span className="text-xs font-normal text-slate-500">s</span></p>
+                        </div>
+                        <div className="w-px bg-slate-700" />
+                        <div className="text-center">
+                          <p className="text-[9px] text-slate-500 uppercase">Prioritas</p>
+                          <p className={`text-sm font-black ${rec.color}`}>{rec.priority}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })() : (
+              <div className="mb-4 p-4 rounded-xl border border-slate-800 bg-slate-900/50 flex items-center gap-3">
+                <span className="text-2xl">🛣️</span>
+                <div>
+                  <p className="text-sm font-bold text-slate-400">Jalan Tol</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Tidak ada lampu merah — rekomendasi sinyal tidak berlaku di ruas tol.</p>
+                </div>
+              </div>
+            )}
 
             <div className="bg-slate-900 rounded-xl p-4">
               <p className="text-xs text-slate-400 mb-2">

@@ -1833,121 +1833,70 @@ def _collect_openai_stream(resp):
 # ======================================================
 # 📷 DETECT SINGLE FRAME (Webcam — browser sends JPEG)
 # ======================================================
-@app.route("/api/detect-frame", methods=["POST"])
-def detect_frame():
-    camera_id = request.form.get("camera_id", type=int)
-    if 'frame' not in request.files:
-        return jsonify({"error": "Field 'frame' tidak ada"}), 400
-
-    raw_bytes = request.files['frame'].read()
-    result = detector.detect_frame_bytes(raw_bytes)
-    if result is None:
-        return jsonify({"error": "Frame tidak valid"}), 400
-
-    if camera_id:
-        try:
-            db_handler.update_traffic_data(camera_id, result['vehicle_count'])
-        except Exception as e:
-            logger.warning("detect-frame DB update failed: %s", e)
-
-    return jsonify({
-        "vehicle_count": result["vehicle_count"],
-        "class_counts":  result["class_counts"],
-        "annotated_image": result["annotated_image"],
-    })
+def _signal_rec(vehicles):
+    if vehicles > 40:
+        return {"status": "PADAT",  "priority": "TINGGI", "green_seconds": 90, "red_seconds": 30,
+                "label": "Perpanjang Fase Hijau",      "note": "Volume tinggi — prioritaskan pergerakan kendaraan"}
+    if vehicles > 20:
+        return {"status": "SEDANG", "priority": "NORMAL", "green_seconds": 60, "red_seconds": 45,
+                "label": "Pertahankan Siklus Normal",  "note": "Volume sedang — pertahankan siklus standar"}
+    return     {"status": "LANCAR", "priority": "RENDAH", "green_seconds": 30, "red_seconds": 60,
+                "label": "Kurangi Fase Hijau",         "note": "Volume rendah — alihkan waktu ke jalur persimpangan"}
 
 
-# ======================================================
-# 🎬 EXTRACT STREAM URL FROM YOUTUBE (via yt-dlp)
-# ======================================================
-@app.route("/api/youtube-url", methods=["POST"])
-def youtube_url():
-    yt_url = (request.json or {}).get("url", "").strip()
-    if not yt_url:
-        return jsonify({"error": "URL YouTube diperlukan"}), 400
+@app.route("/api/signal-recommendation")
+def signal_recommendation_all():
+    """Rekomendasi sinyal adaptif — hanya untuk kamera di persimpangan berlampu."""
     try:
-        result = subprocess.run(
-            ["yt-dlp", "-f", "best[ext=mp4]/best", "--get-url", "--no-playlist", yt_url],
-            capture_output=True, text=True, timeout=30,
-        )
-        direct_url = result.stdout.strip().split("\n")[0]
-        if direct_url and direct_url.startswith("http"):
-            return jsonify({"url": direct_url})
-        return jsonify({"error": result.stderr[:300] or "Tidak bisa ekstrak URL"}), 400
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "Timeout saat ekstrak URL (>30s)"}), 408
+        cctv_list = db_handler.get_all_cctv_status()
+        # Hanya kamera dengan lampu merah (has_signal=True)
+        sig_cams = [c for c in cctv_list if c.get("has_signal", True)]
+        result = []
+        for c in sorted(sig_cams, key=lambda x: x.get("vehicles", 0), reverse=True):
+            rec = _signal_rec(c.get("vehicles", 0))
+            result.append({"id": c["id"], "name": c["name"], "vehicles": c.get("vehicles", 0), **rec})
+        summary = {
+            "with_signal":    len(sig_cams),
+            "without_signal": len(cctv_list) - len(sig_cams),
+            "tinggi": sum(1 for r in result if r["priority"] == "TINGGI"),
+            "normal": sum(1 for r in result if r["priority"] == "NORMAL"),
+            "rendah": sum(1 for r in result if r["priority"] == "RENDAH"),
+        }
+        return jsonify({"cameras": result, "summary": summary})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# ======================================================
-# 📡 LIVE DETECT — Stream URL (SSE, 1 frame/s)
-# ======================================================
-@app.route("/api/live-detect")
-def live_detect():
-    from flask import Response, stream_with_context
-    from core.detector import _inference_lock
-    import cv2 as _cv2, base64 as _b64
+@app.route("/api/signal-recommendation/<int:camera_id>")
+def signal_recommendation_one(camera_id):
+    """Rekomendasi sinyal adaptif untuk satu kamera (hanya jika berlampu)."""
+    try:
+        cctv_list = db_handler.get_all_cctv_status()
+        cam = next((c for c in cctv_list if c["id"] == camera_id), None)
+        if not cam:
+            return jsonify({"error": "Kamera tidak ditemukan"}), 404
+        if not cam.get("has_signal", True):
+            return jsonify({"id": camera_id, "name": cam["name"], "has_signal": False,
+                            "message": "Jalan tol — tidak ada lampu merah"}), 200
+        rec = _signal_rec(cam.get("vehicles", 0))
+        return jsonify({"id": camera_id, "name": cam["name"], "vehicles": cam.get("vehicles", 0),
+                        "has_signal": True, **rec})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-    stream_url = request.args.get("url", "")
-    camera_id  = request.args.get("camera_id", type=int)
-    if not stream_url:
-        return jsonify({"error": "Parameter 'url' diperlukan"}), 400
 
-    CLASS_NAMES = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
-
-    def generate():
-        cap = _cv2.VideoCapture(stream_url)
-        if not cap.isOpened():
-            yield f"data: {json.dumps({'error': 'Tidak bisa membuka stream URL'})}\n\n"
-            return
-
-        logger.info("live-detect started: url=%s cam=%s", stream_url[:80], camera_id)
-        last_process = 0.0
-        try:
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    yield f"data: {json.dumps({'error': 'Stream terputus'})}\n\n"
-                    break
-                now = time.time()
-                if now - last_process < 1.0:
-                    continue
-                last_process = now
-
-                frame = _cv2.resize(frame, (1020, 576))
-                with _inference_lock:
-                    results = detector.model(frame, classes=[2, 3, 5, 7], conf=0.3, verbose=False)
-
-                count = len(results[0].boxes)
-                class_counts = {}
-                if results[0].boxes.cls is not None:
-                    for c in results[0].boxes.cls.cpu().numpy().astype(int):
-                        name = CLASS_NAMES.get(c, str(c))
-                        class_counts[name] = class_counts.get(name, 0) + 1
-
-                annotated = results[0].plot()
-                _, buf = _cv2.imencode('.jpg', annotated, [_cv2.IMWRITE_JPEG_QUALITY, 75])
-                b64 = _b64.b64encode(buf).decode()
-
-                if camera_id:
-                    try:
-                        db_handler.update_traffic_data(camera_id, count)
-                    except Exception:
-                        pass
-
-                yield f"data: {json.dumps({'count': count, 'class_counts': class_counts, 'frame': b64})}\n\n"
-
-        except GeneratorExit:
-            logger.info("live-detect: client disconnected")
-        finally:
-            cap.release()
-
-    return Response(
-        stream_with_context(generate()),
-        content_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+@app.route("/api/simulate-count", methods=["POST"])
+def simulate_count():
+    data = request.get_json(silent=True) or {}
+    camera_id = data.get("camera_id")
+    count = data.get("count")
+    if not camera_id or count is None:
+        return jsonify({"error": "camera_id dan count diperlukan"}), 400
+    try:
+        db_handler.update_traffic_data(camera_id, int(count))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True, "camera_id": camera_id, "count": count})
 
 
 # ======================================================
