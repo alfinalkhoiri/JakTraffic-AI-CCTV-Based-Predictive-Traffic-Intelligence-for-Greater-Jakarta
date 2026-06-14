@@ -28,6 +28,12 @@ Sistem pemantauan dan prediksi lalu lintas berbasis AI untuk wilayah DKI Jakarta
 - Turn-by-turn navigation (petunjuk arah Bahasa Indonesia)
 - Prediksi kondisi 1 jam ke depan di sepanjang rute
 
+### TomTom Traffic Integration
+- **Traffic Flow API** — kecepatan nyata vs bebas hambatan per titik kamera (km/j)
+- **Traffic Incidents API** — kecelakaan, kemacetan, penutupan jalan di peta Jakarta–Bekasi
+- Efisiensi lajur ditampilkan di sidebar kamera terpilih
+- Insiden ditampilkan sebagai marker kuning/merah langsung di peta
+
 ### YOLO 11 Vehicle Detection
 - Model: `yolo11n.pt` — deteksi mobil, motor, bus, truk
 - Upload gambar/video → deteksi + anotasi langsung
@@ -64,6 +70,7 @@ Sistem pemantauan dan prediksi lalu lintas berbasis AI untuk wilayah DKI Jakarta
 | LLM | SumoPod GPT-5 Nano (OpenAI-compatible API) |
 | Database | PostgreSQL |
 | Routing | OSRM (open source) |
+| Traffic Data | TomTom Traffic Flow + Incidents API |
 | Deployment | Nginx + PM2 / systemd, VPS Ubuntu |
 
 ---
@@ -144,6 +151,9 @@ DB_PASSWORD=your_password_here
 SUMOPOD_API_KEY=your_sumopod_api_key_here
 SUMOPOD_URL=https://ai.sumopod.com/v1/chat/completions
 SUMOPOD_MODEL=gpt-5-nano
+
+# Opsional — aktifkan TomTom Traffic (daftar gratis di developer.tomtom.com)
+TOMTOM_API_KEY=your_tomtom_api_key_here
 ```
 
 ### `frontend/.env`
@@ -171,6 +181,8 @@ REACT_APP_CCTV_PROXY=https://your-worker.workers.dev
 | GET | `/api/signal-recommendation/<id>` | Rekomendasi sinyal satu kamera |
 | POST | `/api/simulate-count` | Update jumlah kendaraan manual |
 | POST | `/api/detect-upload` | YOLO detection dari file gambar/video |
+| GET | `/api/tomtom-flow?lat=<lat>&lng=<lng>` | TomTom Traffic Flow — kecepatan nyata vs bebas hambatan |
+| GET | `/api/tomtom-incidents` | TomTom Incidents — kecelakaan & gangguan Jakarta–Bekasi |
 | POST | `/api/chat` | AI chatbot (non-streaming) |
 | POST | `/api/chat-stream` | AI chatbot (SSE streaming) |
 | GET | `/api/model-info` | Info Transformer model |

@@ -24,6 +24,38 @@ SUMOPOD_API_KEY = os.environ.get("SUMOPOD_API_KEY", "")
 SUMOPOD_URL     = os.environ.get("SUMOPOD_URL", "https://ai.sumopod.com/v1/chat/completions")
 SUMOPOD_MODEL   = os.environ.get("SUMOPOD_MODEL", "gpt-5-nano")
 
+# TomTom Traffic API
+TOMTOM_API_KEY      = os.environ.get("TOMTOM_API_KEY", "")
+_TOMTOM_FLOW_CACHE  = {}          # key → {ts, data}
+_TOMTOM_INC_CACHE   = {"ts": 0, "data": []}
+TOMTOM_CACHE_TTL    = 60          # seconds — flow cache TTL
+TOMTOM_INC_TTL      = 120         # seconds — incidents cache TTL
+JAKARTA_BBOX        = "106.6,-6.4,107.1,-6.05"
+
+
+def _tomtom_flow(lat, lng):
+    """Fetch TomTom Traffic Flow Segment Data for a road point. Returns dict or None."""
+    if not TOMTOM_API_KEY:
+        return None
+    cache_key = f"{round(lat, 4)},{round(lng, 4)}"
+    now = time.time()
+    if cache_key in _TOMTOM_FLOW_CACHE and now - _TOMTOM_FLOW_CACHE[cache_key]["ts"] < TOMTOM_CACHE_TTL:
+        return _TOMTOM_FLOW_CACHE[cache_key]["data"]
+    try:
+        resp = requests.get(
+            "https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json",
+            params={"point": f"{lat},{lng}", "key": TOMTOM_API_KEY},
+            timeout=5,
+        )
+        if resp.ok:
+            data = resp.json().get("flowSegmentData", {})
+            _TOMTOM_FLOW_CACHE[cache_key] = {"ts": now, "data": data}
+            return data
+        logger.warning("TomTom flow HTTP %s for %s,%s", resp.status_code, lat, lng)
+    except Exception as e:
+        logger.warning("TomTom flow %s,%s: %s", lat, lng, e)
+    return None
+
 
 # --- IMPORT INTERNAL ---
 from database import db_handler
@@ -1897,6 +1929,82 @@ def simulate_count():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify({"ok": True, "camera_id": camera_id, "count": count})
+
+
+# ======================================================
+# 🛰️ TOMTOM TRAFFIC API
+# ======================================================
+@app.route("/api/tomtom-flow")
+def tomtom_flow_endpoint():
+    """TomTom Traffic Flow: kecepatan nyata vs bebas hambatan untuk satu titik jalan.
+    Query params: lat, lng
+    """
+    if not TOMTOM_API_KEY:
+        return jsonify({"error": "TOMTOM_API_KEY belum dikonfigurasi"}), 503
+    try:
+        lat = float(request.args.get("lat", ""))
+        lng = float(request.args.get("lng", ""))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Parameter lat dan lng diperlukan"}), 400
+    data = _tomtom_flow(lat, lng)
+    if data:
+        return jsonify(data)
+    return jsonify({"error": "Tidak ada data dari TomTom"}), 502
+
+
+@app.route("/api/tomtom-incidents")
+def tomtom_incidents():
+    """TomTom Traffic Incidents: kecelakaan & gangguan di area Jakarta–Bekasi."""
+    global _TOMTOM_INC_CACHE
+    if not TOMTOM_API_KEY:
+        return jsonify({"error": "TOMTOM_API_KEY belum dikonfigurasi"}), 503
+    now = time.time()
+    if _TOMTOM_INC_CACHE["ts"] and now - _TOMTOM_INC_CACHE["ts"] < TOMTOM_INC_TTL:
+        return jsonify(_TOMTOM_INC_CACHE["data"])
+    try:
+        resp = requests.get(
+            "https://api.tomtom.com/traffic/services/5/incidentDetails",
+            params={
+                "bbox": JAKARTA_BBOX,
+                "key": TOMTOM_API_KEY,
+                "fields": "{incidents{type,geometry{type,coordinates},properties{iconCategory,magnitudeOfDelay,events{description,code},from,to,startTime,endTime}}}",
+                "language": "id-ID",
+                "timeValidityFilter": "present",
+            },
+            timeout=10,
+        )
+        if not resp.ok:
+            return jsonify({"error": f"TomTom HTTP {resp.status_code}"}), 502
+
+        incidents = resp.json().get("incidents", [])
+        result = []
+        for inc in incidents:
+            props = inc.get("properties", {})
+            geom  = inc.get("geometry", {})
+            coords = geom.get("coordinates", [])
+            gtype  = geom.get("type", "")
+            if gtype == "Point" and len(coords) >= 2:
+                lng_val, lat_val = coords[0], coords[1]
+            elif gtype == "LineString" and coords:
+                mid = len(coords) // 2
+                lng_val, lat_val = coords[mid][0], coords[mid][1]
+            else:
+                continue
+            events = props.get("events") or [{}]
+            result.append({
+                "lat":         lat_val,
+                "lng":         lng_val,
+                "category":    props.get("iconCategory", 0),
+                "delay":       props.get("magnitudeOfDelay", 0),
+                "from":        props.get("from", ""),
+                "to":          props.get("to", ""),
+                "description": events[0].get("description", ""),
+            })
+        _TOMTOM_INC_CACHE = {"ts": now, "data": result}
+        return jsonify(result)
+    except Exception as e:
+        logger.warning("TomTom incidents error: %s", e)
+        return jsonify({"error": str(e)}), 502
 
 
 # ======================================================

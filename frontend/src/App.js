@@ -355,6 +355,24 @@ const etaBadgeIcon = (minutes, km, isDestination = false) => L.divIcon({
   iconAnchor: [0, 0],
 });
 
+/* ================= TOMTOM INCIDENT ICON ================= */
+const INCIDENT_LABELS = {
+  1: "Kecelakaan", 2: "Kabut", 3: "Kondisi Berbahaya", 4: "Hujan",
+  5: "Es di Jalan", 6: "Kemacetan", 7: "Lajur Ditutup",
+  8: "Jalan Ditutup", 9: "Perbaikan Jalan", 11: "Banjir", 14: "Kendaraan Mogok",
+};
+const INCIDENT_EMOJI = { 1: "🚗", 6: "🚦", 7: "🚧", 8: "⛔", 9: "🔧", 11: "🌊", 14: "🚗" };
+
+const incidentIcon = (category) => {
+  const color = [1, 8].includes(category) ? "#ef4444" : [6].includes(category) ? "#f97316" : "#f59e0b";
+  const emoji = INCIDENT_EMOJI[category] || "⚠";
+  return L.divIcon({
+    className: "",
+    html: `<div style="width:26px;height:26px;background:${color};border:2px solid rgba(255,255,255,.85);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.5);">${emoji}</div>`,
+    iconSize: [26, 26], iconAnchor: [13, 13],
+  });
+};
+
 /* ================= MAP CLICK ================= */
 function MapClickHandler({ onPick }) {
   useMapEvents({
@@ -405,6 +423,10 @@ export default function App() {
 
   // Toll road corridor polylines: [{points:[[lat,lng],...], name, color}]
   const [tollRoadLines, setTollRoadLines] = useState([]);
+
+  // TomTom traffic data
+  const [tomtomIncidents, setTomtomIncidents] = useState([]);
+  const [tomtomFlow,      setTomtomFlow]      = useState(null);
 
   // ── Chatbot map control state ──────────────────────────────────────────────
   const [highlighted, setHighlighted]   = useState([]);   // array location_id — pin biru chatbot
@@ -662,6 +684,26 @@ export default function App() {
     axios
       .get(`${API}/api/now-vs-usual/${selected.id}`)
       .then(res => setNowVsUsual(res.data));
+  }, [selected]);
+
+  /* ================= TOMTOM: incidents (area Jakarta–Bekasi) ================= */
+  useEffect(() => {
+    const fetchInc = () => {
+      axios.get(`${API}/api/tomtom-incidents`)
+        .then(res => { if (Array.isArray(res.data)) setTomtomIncidents(res.data); })
+        .catch(() => {});
+    };
+    fetchInc();
+    const t = setInterval(fetchInc, 5 * 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  /* ================= TOMTOM: flow data untuk kamera terpilih ================= */
+  useEffect(() => {
+    if (!selected?.lat || !selected?.lng) { setTomtomFlow(null); return; }
+    axios.get(`${API}/api/tomtom-flow`, { params: { lat: selected.lat, lng: selected.lng } })
+      .then(res => setTomtomFlow(res.data?.currentSpeed ? res.data : null))
+      .catch(() => setTomtomFlow(null));
   }, [selected]);
 
   /* ================= COMPARE MODE DATA FETCH ================= */
@@ -977,6 +1019,28 @@ export default function App() {
             />
           ))}
 
+          {/* ── TomTom Incidents ── */}
+          {tomtomIncidents.map((inc, i) => (
+            <Marker
+              key={`inc-${i}`}
+              position={[inc.lat, inc.lng]}
+              icon={incidentIcon(inc.category)}
+              zIndexOffset={500}
+            >
+              <Popup>
+                <div style={{ color: "#0f172a", fontSize: 12, maxWidth: 200, lineHeight: 1.4 }}>
+                  <b>{INCIDENT_LABELS[inc.category] || "Insiden"}</b>
+                  {inc.description && <p style={{ margin: "3px 0 0" }}>{inc.description}</p>}
+                  {(inc.from || inc.to) && (
+                    <p style={{ margin: "3px 0 0", color: "#64748b", fontSize: 10 }}>
+                      {inc.from}{inc.to ? ` → ${inc.to}` : ""}
+                    </p>
+                  )}
+                </div>
+              </Popup>
+            </Marker>
+          ))}
+
           {filteredCctv.map(c => {
             const ev    = getEffectiveVehicles(c);
             const color = ev > 30 ? "#ef4444" : ev > 15 ? "#f97316" : "#22c55e";
@@ -1037,6 +1101,12 @@ export default function App() {
             <span style={{display:"inline-block",width:11,height:11,transform:"rotate(45deg)",background:"#22c55e",border:"1.5px solid white",borderRadius:"2px"}}></span>
             <span>CCTV Jalan Tol</span>
           </div>
+          {tomtomIncidents.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span style={{display:"inline-block",width:12,height:12,background:"#f97316",border:"1.5px solid white",borderRadius:"2px",fontSize:8,lineHeight:"12px",textAlign:"center"}}>⚠</span>
+              <span>Insiden TomTom ({tomtomIncidents.length})</span>
+            </div>
+          )}
         </div>
 
         {/* Mobile backdrop */}
@@ -1361,6 +1431,44 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {/* ── TomTom Kecepatan Jalan ── */}
+            {tomtomFlow?.currentSpeed > 0 && (() => {
+              const pct = Math.round((tomtomFlow.currentSpeed / Math.max(tomtomFlow.freeFlowSpeed, 1)) * 100);
+              const speedColor = tomtomFlow.currentSpeed < 20 ? "text-red-400" : tomtomFlow.currentSpeed < 40 ? "text-yellow-400" : "text-emerald-400";
+              const barColor   = pct < 40 ? "bg-red-500" : pct < 70 ? "bg-yellow-500" : "bg-emerald-500";
+              return (
+                <div className="mb-4 bg-slate-900 p-4 rounded-xl border border-slate-800">
+                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-3">
+                    🛰️ Kecepatan Jalan (TomTom)
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-[9px] text-slate-500 uppercase">Sekarang</p>
+                      <p className={`text-2xl font-black ${speedColor}`}>
+                        {tomtomFlow.currentSpeed}<span className="text-xs font-normal text-slate-500"> km/j</span>
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] text-slate-500 uppercase">Bebas Hambatan</p>
+                      <p className="text-2xl font-black text-slate-300">
+                        {tomtomFlow.freeFlowSpeed}<span className="text-xs font-normal text-slate-500"> km/j</span>
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-2">
+                    <div className="flex justify-between text-[9px] text-slate-500 mb-1">
+                      <span>Efisiensi Lajur</span>
+                      <span>{pct}%</span>
+                    </div>
+                    <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${Math.min(100, pct)}%` }} />
+                    </div>
+                  </div>
+                  <p className="text-[9px] text-slate-600 mt-2">Sumber: TomTom Traffic Flow API</p>
+                </div>
+              );
+            })()}
 
             <div className="bg-slate-900 rounded-xl p-4">
               <p className="text-xs text-slate-400 mb-2">
