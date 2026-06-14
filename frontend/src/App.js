@@ -1507,71 +1507,51 @@ export default function App() {
               </div>
             </div>
 
-            <div className={`mb-4 p-4 rounded-xl border ${routeDecisionBg}`}>
-              <p className={`font-bold ${routeDecisionColor}`}>
-                {routeDecisionLabel}
+            {/* ── Kondisi Rute: Sekarang → 1 Jam Lagi (unified) ── */}
+            <div className="mb-4 bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
+              <p className="text-[10px] text-slate-500 uppercase font-bold px-4 pt-3 pb-2">
+                Kondisi Rute
               </p>
-              <p className="text-xs text-slate-400 mt-1">
-                {routeDecisionNote}
-              </p>
+              <div className="flex divide-x divide-slate-800">
+                {/* Sekarang */}
+                <div className="flex-1 px-4 pb-4">
+                  <p className="text-[9px] text-slate-500 uppercase mb-1">Sekarang</p>
+                  <p className={`font-bold text-sm ${routeDecisionColor}`}>{routeDecisionLabel}</p>
+                  <p className="text-[10px] text-slate-400 mt-1 leading-snug">{routeDecisionNote}</p>
+                </div>
+
+                {/* Arrow */}
+                <div className="flex items-center px-3 text-slate-600 text-lg select-none">→</div>
+
+                {/* 1 Jam Lagi */}
+                <div className="flex-1 px-4 pb-4">
+                  <p className="text-[9px] text-slate-500 uppercase mb-1">1 Jam Lagi</p>
+                  {nextHourPrediction ? (
+                    <>
+                      <p className={`font-bold text-sm ${predictionStyle(nextHourPrediction.status).color}`}>
+                        {predictionStyle(nextHourPrediction.status).icon} {nextHourPrediction.label}
+                      </p>
+                      <p className="text-[10px] text-slate-400 mt-1">
+                        {nextHourPrediction.now} → {nextHourPrediction.predicted} kend.{" "}
+                        <span className={nextHourPrediction.change_percent < 0 ? "text-emerald-400 font-bold" : "text-red-400 font-bold"}>
+                          {nextHourPrediction.change_percent > 0 ? "+" : ""}{nextHourPrediction.change_percent}%
+                        </span>
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-[10px] text-slate-500">Memuat...</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Footer */}
+              {nextHourPrediction && (
+                <div className="px-4 py-2 border-t border-slate-800 flex justify-between items-center">
+                  <p className="text-[9px] text-slate-500 italic">{nextHourPrediction.note}</p>
+                  <span className="text-[9px] text-slate-600">Confidence: {nextHourPrediction.confidence}</span>
+                </div>
+              )}
             </div>
-
-              {/* 🆕 PREDIKSI 1 JAM KEDEPAN */}
-    {nextHourPrediction && (
-      <div
-        className={`mb-4 p-4 rounded-xl border ${
-          predictionStyle(nextHourPrediction.status).bg
-        }`}
-      >
-        <p className="text-xs text-slate-400 mb-1">
-          Prediksi 1 Jam Kedepan
-        </p>
-
-        <div className="flex items-center gap-2">
-          <span className="text-xl">
-            {predictionStyle(nextHourPrediction.status).icon}
-          </span>
-          <p
-            className={`font-bold ${
-              predictionStyle(nextHourPrediction.status).color
-            }`}
-          >
-            {nextHourPrediction.label}
-          </p>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3 mt-3">
-          <div>
-            <p className="text-xs text-slate-400">Sekarang</p>
-            <p className="text-lg font-bold">
-              {nextHourPrediction.now}
-            </p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-400">Prediksi</p>
-            <p className="text-lg font-bold">
-              {nextHourPrediction.predicted}
-            </p>
-          </div>
-        </div>
-
-        <p className="text-xs text-slate-400 mt-2">
-          Perubahan:{" "}
-          <span className="font-bold">
-            {nextHourPrediction.change_percent}%
-          </span>
-          {" • "}
-          Confidence:{" "}
-          <span className="font-bold">
-            {nextHourPrediction.confidence}
-          </span>
-        </p>
-
-        <p className="text-xs text-slate-500 mt-2 italic">
-          {nextHourPrediction.note}
-        </p>
-      </div>
-    )}
 
           </>
         ) : (
