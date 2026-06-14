@@ -606,10 +606,10 @@ def predict_next_hour(location_id):
         conn.close()
         return jsonify({"error": "Not found"}), 404
 
-    now_val = row["vehicles"]
+    now_val = int(row["vehicles"] or 0)
 
     next_hour = (datetime.now().hour + 1) % 24
-    usual_next = db_handler.get_hourly_usual_traffic(location_id, next_hour)
+    usual_next = float(db_handler.get_hourly_usual_traffic(location_id, next_hour) or 0)
 
     predicted = int((0.6 * usual_next) + (0.4 * now_val))
     delta_pct = ((predicted - now_val) / max(now_val, 1)) * 100

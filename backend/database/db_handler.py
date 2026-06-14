@@ -229,11 +229,11 @@ def get_usual_traffic(location_id, days=7):
         """ % ('%s', days), (location_id,))
 
         row = cur.fetchone()
-        return row["avg_usual"] if row and row["avg_usual"] else 0
+        return float(row["avg_usual"]) if row and row["avg_usual"] else 0.0
 
     except Exception as e:
         logger.error(f"[DB] get_usual_traffic error: {e}")
-        return 0
+        return 0.0
 
     finally:
         cur.close()
@@ -340,11 +340,11 @@ def get_hourly_usual_traffic(location_id, hour, days=7):
         """ % ('%s', '%s', days), (location_id, f"{hour:02d}"))
 
         row = cur.fetchone()
-        return row["avg_val"] or 0
+        return float(row["avg_val"]) if row and row["avg_val"] else 0.0
 
     except Exception as e:
         logger.error(f"[DB] get_hourly_usual_traffic error: {e}")
-        return 0
+        return 0.0
 
     finally:
         cur.close()
