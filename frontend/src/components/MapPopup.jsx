@@ -26,26 +26,46 @@ function MiniLight({ active }) {
 }
 
 function LivePreview({ previewUrl }) {
-  const videoRef = useRef(null);
-  const hlsRef   = useRef(null);
-  const [status, setStatus] = useState("loading");
+  const videoRef  = useRef(null);
+  const hlsRef    = useRef(null);
+  const [status, setStatus]     = useState("loading");
+  const [attempt, setAttempt]   = useState(0); // 0=direct, 1=proxy, 2=failed
 
-  const startHls = useCallback((src) => {
+  const startHls = useCallback((src, useProxy) => {
     const video = videoRef.current;
     if (!video || !src) { setStatus("offline"); return; }
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
 
-    const proxied = WORKER_URL ? `${WORKER_URL}/?url=${encodeURIComponent(src)}` : src;
+    // Coba langsung dulu; kalau gagal dan ada proxy, coba via proxy
+    const target = (useProxy && WORKER_URL) ? `${WORKER_URL}/?url=${encodeURIComponent(src)}` : src;
 
     if (Hls.isSupported()) {
-      const hls = new Hls({ maxBufferLength: 8, liveSyncDurationCount: 2, enableWorker: false });
+      const hls = new Hls({
+        maxBufferLength: 8,
+        liveSyncDurationCount: 2,
+        enableWorker: false,
+        manifestLoadingTimeOut: 12000,
+        manifestLoadingMaxRetry: 1,
+      });
       hlsRef.current = hls;
-      hls.loadSource(proxied);
+      hls.loadSource(target);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); setStatus("live"); });
-      hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) { hls.destroy(); setStatus("offline"); } });
+      hls.on(Hls.Events.ERROR, (_, d) => {
+        if (d.fatal) {
+          hls.destroy();
+          hlsRef.current = null;
+          // Kalau koneksi langsung gagal dan ada proxy, coba via proxy sekali
+          if (!useProxy && WORKER_URL) {
+            setAttempt(1);
+          } else {
+            setStatus("offline");
+          }
+        }
+      });
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = proxied;
+      // Safari: native HLS, tidak butuh proxy/CORS
+      video.src = src;
       video.onloadedmetadata = () => { video.play().catch(() => {}); setStatus("live"); };
       video.onerror = () => setStatus("offline");
     } else {
@@ -53,38 +73,69 @@ function LivePreview({ previewUrl }) {
     }
   }, []);
 
+  // attempt 0: direct, attempt 1: via proxy, attempt 2: failed
   useEffect(() => {
-    if (previewUrl) { setStatus("loading"); startHls(previewUrl); }
-    else setStatus("offline");
+    if (!previewUrl) { setStatus("offline"); return; }
+    setStatus("loading");
+    startHls(previewUrl, attempt === 1);
     return () => { if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } };
-  }, [previewUrl, startHls]);
+  }, [previewUrl, attempt, startHls]);
+
+  const retry = () => { setAttempt(0); setStatus("loading"); };
 
   return (
     <div style={{ position: "relative", height: 155, background: "#0f172a", overflow: "hidden" }}>
       <video
         ref={videoRef}
         muted playsInline autoPlay
+        crossOrigin="anonymous"
         style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", opacity: status === "live" ? 1 : 0, transition: "opacity .4s" }}
       />
 
-      {/* Offline / Loading placeholder */}
+      {/* Loading / Offline state */}
       {status !== "live" && (
-        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8 }}>
-          <div style={{ fontSize: 36, opacity: 0.2 }}>📷</div>
-          <p style={{ fontSize: 11, color: "#475569", margin: 0 }}>
-            {status === "loading" ? "Menghubungkan..." : "Preview tidak tersedia"}
-          </p>
-          {status === "loading" && (
-            <div style={{ display: "flex", gap: 4 }}>
-              {[0,1,2].map(i => (
-                <span key={i} style={{ width: 7, height: 7, borderRadius: "50%", background: "#3b82f6", animation: `bounce 1s ${i*0.15}s infinite` }} />
-              ))}
-            </div>
+        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, padding: "0 16px" }}>
+          <div style={{ fontSize: 32, opacity: 0.2 }}>📡</div>
+          {status === "loading" ? (
+            <>
+              <p style={{ fontSize: 11, color: "#475569", margin: 0 }}>
+                {attempt === 1 ? "Mencoba via proxy..." : "Menghubungkan ke stream..."}
+              </p>
+              <div style={{ display: "flex", gap: 4 }}>
+                {[0,1,2].map(i => (
+                  <span key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#3b82f6", animation: `bounce 1s ${i*0.15}s infinite` }} />
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <p style={{ fontSize: 11, color: "#475569", margin: 0, textAlign: "center" }}>
+                Stream tidak terjangkau
+              </p>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  onClick={retry}
+                  style={{ fontSize: 10, color: "#94a3b8", background: "#1e293b", border: "1px solid #334155", borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}
+                >
+                  ↺ Retry
+                </button>
+                {previewUrl && (
+                  <a
+                    href={previewUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ fontSize: 10, color: "#94a3b8", background: "#1e293b", border: "1px solid #334155", borderRadius: 6, padding: "3px 8px", textDecoration: "none" }}
+                  >
+                    ↗ Buka di Tab Baru
+                  </a>
+                )}
+              </div>
+            </>
           )}
         </div>
       )}
 
-      {/* Live badge */}
+      {/* LIVE badge */}
       {status === "live" && (
         <div style={{ position: "absolute", top: 8, left: 8, background: "rgba(239,68,68,0.9)", borderRadius: 999, padding: "2px 8px", display: "flex", alignItems: "center", gap: 4 }}>
           <span style={{ width: 6, height: 6, borderRadius: "50%", background: "white", animation: "pulse 1.5s infinite" }} />
@@ -92,7 +143,6 @@ function LivePreview({ previewUrl }) {
         </div>
       )}
 
-      {/* Bottom gradient */}
       <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 40, background: "linear-gradient(to top, rgba(15,23,42,0.95), transparent)", pointerEvents: "none" }} />
     </div>
   );

@@ -35,9 +35,12 @@ export default function LiveCCTV({ streamUrl, onDetect }) {
 
     if (Hls.isSupported()) {
       const hls = new Hls({
-        enableWorker: true,
+        enableWorker: false,
         lowLatencyMode: false,
         backBufferLength: 0,
+        manifestLoadingTimeOut: 15000,
+        manifestLoadingMaxRetry: 2,
+        manifestLoadingRetryDelay: 2000,
       });
       hlsRef.current = hls;
       hls.loadSource(streamUrl);
@@ -160,9 +163,24 @@ export default function LiveCCTV({ streamUrl, onDetect }) {
         {status === "error" && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/70">
             <div className="text-center px-4">
-              <p className="text-2xl mb-1">📡</p>
-              <p className="text-xs text-slate-400">Stream tidak tersedia</p>
-              <p className="text-[10px] text-slate-600 mt-1">Server CCTV mungkin offline</p>
+              <p className="text-xl mb-1">📡</p>
+              <p className="text-xs text-slate-400 mb-2">Stream tidak terjangkau</p>
+              <div className="flex gap-2 justify-center">
+                <button
+                  onClick={() => { setStatus("loading"); if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } }}
+                  className="text-[10px] bg-slate-700 hover:bg-slate-600 text-slate-300 px-2 py-1 rounded cursor-pointer"
+                >
+                  ↺ Retry
+                </button>
+                <a
+                  href={streamUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] bg-blue-700 hover:bg-blue-600 text-white px-2 py-1 rounded"
+                >
+                  ↗ Buka di Tab Baru
+                </a>
+              </div>
             </div>
           </div>
         )}
