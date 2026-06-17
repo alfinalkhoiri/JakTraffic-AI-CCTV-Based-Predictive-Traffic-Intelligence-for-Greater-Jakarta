@@ -30,6 +30,7 @@ import { Route, AlertTriangle, Clock, TrendingUp } from "lucide-react";
 import ChatButton from "./components/ChatButton";
 import ChatPopup from "./components/ChatPopup";
 import MapPopup from "./components/MapPopup";
+import LiveCCTV from "./components/LiveCCTV";
 
 const API = process.env.REACT_APP_API_URL || "";
 
@@ -428,6 +429,9 @@ export default function App() {
   const [tomtomIncidents, setTomtomIncidents] = useState([]);
   const [tomtomFlow,      setTomtomFlow]      = useState(null);
 
+  // YOLO live detect hasil dari LiveCCTV component
+  const [liveYolo, setLiveYolo] = useState(null);
+
   // ── Chatbot map control state ──────────────────────────────────────────────
   const [highlighted, setHighlighted]   = useState([]);   // array location_id — pin biru chatbot
   const [mapFlyTo,    setMapFlyTo]      = useState(null); // { lat, lng } — auto-zoom
@@ -700,6 +704,7 @@ export default function App() {
 
   /* ================= TOMTOM: flow data untuk kamera terpilih ================= */
   useEffect(() => {
+    setLiveYolo(null); // reset YOLO saat pindah kamera
     if (!selected?.lat || !selected?.lng) { setTomtomFlow(null); return; }
     axios.get(`${API}/api/tomtom-flow`, { params: { lat: selected.lat, lng: selected.lng } })
       .then(res => setTomtomFlow(res.data?.currentSpeed ? res.data : null))
@@ -1365,7 +1370,22 @@ export default function App() {
         {selected ? (
           <>
             <h2 className="text-2xl font-bold mb-1">{selected.name}</h2>
-            <p className="text-slate-400 mb-4">{selected.vehicles} kendaraan saat ini</p>
+            <p className="text-slate-400 mb-2">
+              {liveYolo ? (
+                <span className="text-emerald-400 font-bold">{liveYolo.vehicle_count} kendaraan</span>
+              ) : (
+                <span>{selected.vehicles} kendaraan saat ini</span>
+              )}
+              {liveYolo && <span className="text-slate-600 text-xs ml-1">(YOLO live)</span>}
+            </p>
+
+            {/* ── Live CCTV Stream ── */}
+            {selected.preview_url && (
+              <LiveCCTV
+                streamUrl={selected.preview_url}
+                onDetect={(result) => setLiveYolo(result)}
+              />
+            )}
 
             {nowVsUsual && (
               <div className="grid grid-cols-2 gap-4 mb-4">

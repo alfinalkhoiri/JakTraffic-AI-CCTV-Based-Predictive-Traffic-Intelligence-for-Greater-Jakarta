@@ -2052,6 +2052,56 @@ def detect_upload():
 
 
 # ======================================================
+# 🎯 YOLO DETECT FROM BROWSER FRAME (base64 JPEG)
+# ======================================================
+@app.route("/api/detect-frame", methods=["POST"])
+def detect_frame():
+    """
+    Menerima frame dari browser (canvas.toDataURL) sebagai base64 JPEG,
+    jalankan YOLO, kembalikan annotated image + jumlah kendaraan.
+    Body: { "image": "data:image/jpeg;base64,..." atau "<base64 murni>" }
+    """
+    import base64
+    data = request.get_json(silent=True)
+    if not data or "image" not in data:
+        return jsonify({"error": "Field 'image' (base64) tidak ada"}), 400
+
+    raw = data["image"]
+    # Hapus header data URI jika ada
+    if "," in raw:
+        raw = raw.split(",", 1)[1]
+
+    try:
+        img_bytes = base64.b64decode(raw)
+    except Exception:
+        return jsonify({"error": "Base64 tidak valid"}), 400
+
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        tmp.write(img_bytes)
+        tmp_path = tmp.name
+
+    try:
+        result = detector.detect_file(tmp_path)
+        if result is None:
+            return jsonify({"error": "Frame tidak bisa diproses"}), 500
+        return jsonify({
+            "success": True,
+            "vehicle_count": result["vehicle_count"],
+            "class_counts": result["class_counts"],
+            "annotated_image": result["annotated_image"],
+            "processing_time_ms": result["processing_time_ms"],
+        })
+    except Exception as e:
+        logger.exception("detect-frame error")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+# ======================================================
 # 🧠 MODEL INFO (ADMIN)
 # ======================================================
 @app.route("/api/model-info")
