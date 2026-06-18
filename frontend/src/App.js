@@ -9,6 +9,7 @@ import {
   Popup,
   Polyline,
   Circle,
+  Tooltip as LeafletTooltip,
   useMapEvents,
   useMap,
 } from "react-leaflet";
@@ -477,8 +478,8 @@ export default function App() {
     }
   };
 
-  const filteredCctv = routeMode === "all" ? cctv
-    : cctv.filter(c => (c.road_type || "city") === routeMode);
+  const filteredCctv = (routeMode === "all" ? cctv : cctv.filter(c => (c.road_type || "city") === routeMode))
+    .filter(c => c.lat != null && c.lng != null);
 
   /* ================= TOLL ROAD CORRIDOR OVERLAY ================= */
   useEffect(() => {
@@ -987,7 +988,7 @@ export default function App() {
           )}
 
           {/* ── Toll road corridor overlay ── */}
-          {tollRoadLines.map((line, idx) => (
+          {tollRoadLines.filter(line => line.points?.length >= 2).map((line, idx) => (
             <React.Fragment key={`toll-road-${idx}`}>
               {/* Glow / shadow */}
               <Polyline
@@ -1000,10 +1001,10 @@ export default function App() {
                 positions={line.points}
                 pathOptions={{ color: line.color, weight: 5, opacity: 0.9, dashArray: "10 4", lineCap: "round" }}
               >
-                <Tooltip sticky direction="top" offset={[0, -4]}
+                <LeafletTooltip sticky direction="top" offset={[0, -4]}
                   className="bg-slate-800 text-white text-xs border-0 shadow-lg px-2 py-1 rounded">
                   🛣️ {line.name}
-                </Tooltip>
+                </LeafletTooltip>
                 <Popup>
                   <b style={{color: line.color}}>🛣️ {line.name}</b>
                 </Popup>
@@ -1024,7 +1025,7 @@ export default function App() {
             />
           ))}
 
-          {waypointETAs.map(wp => (
+          {waypointETAs.filter(wp => wp.lat != null && wp.lng != null).map(wp => (
             <Marker
               key={`eta-${wp.cctv_id}`}
               position={[wp.lat, wp.lng]}
@@ -1034,7 +1035,7 @@ export default function App() {
           ))}
 
           {/* ── TomTom Incidents ── */}
-          {tomtomIncidents.map((inc, i) => (
+          {tomtomIncidents.filter(inc => inc.lat != null && inc.lng != null).map((inc, i) => (
             <Marker
               key={`inc-${i}`}
               position={[inc.lat, inc.lng]}
