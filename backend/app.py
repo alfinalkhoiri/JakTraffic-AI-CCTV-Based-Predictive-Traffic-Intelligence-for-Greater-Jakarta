@@ -4,7 +4,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 from datetime import datetime, timedelta
-from core.scoring import evaluate_now_vs_usual
+from core.scoring import evaluate_now_vs_usual, calculate_decision
 from database.db_handler import get_usual_traffic
 import requests
 import psycopg2.extras
@@ -117,22 +117,40 @@ def _process_single_camera(cctv, timestamp):
     name = cctv.get("name", f"Lokasi {loc_id}")
     stream_url = cctv.get("stream_url")
     try:
+        ts_dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S") if isinstance(timestamp, str) else timestamp
         if not stream_url:
-            # Tidak ada URL stream — gunakan simulasi realistis
-            ts_dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S") if isinstance(timestamp, str) else timestamp
             vehicle_count = _simulate_vehicle_count(loc_id, ts_dt)
         else:
-            vehicle_count = detector.get_vehicle_count(stream_url, loc_id)
+            yolo_count = detector.get_vehicle_count(stream_url, loc_id)
+            if yolo_count is None:
+                # Stream tidak terjangkau — fallback ke simulasi
+                logger.warning(f"[YOLO] Lokasi {loc_id} ({name}): stream gagal, pakai simulasi")
+                vehicle_count = _simulate_vehicle_count(loc_id, ts_dt)
+            else:
+                vehicle_count = yolo_count
+        # Hitung status dan risk_score berdasarkan jumlah kendaraan
+        weather_text = cctv.get("weather") or "Cerah"
+        new_status, _ = calculate_decision(vehicle_count, weather_text)
+        risk = 0
+        if vehicle_count > 40:
+            risk = 60
+        elif vehicle_count >= 20:
+            risk = 20
+        if "hujan" in weather_text.lower() or "rain" in weather_text.lower():
+            risk = min(risk + 20, 100)
+        elif "badai" in weather_text.lower() or "thunder" in weather_text.lower():
+            risk = min(risk + 50, 100)
+
         db_handler.insert_log(loc_id, vehicle_count, timestamp)
         conn = db_handler.get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "UPDATE current_traffic SET vehicles = %s, last_update = %s WHERE id = %s",
-            (vehicle_count, timestamp, loc_id)
+            "UPDATE current_traffic SET vehicles = %s, status = %s, risk_score = %s, last_update = %s WHERE id = %s",
+            (vehicle_count, new_status, risk, timestamp, loc_id)
         )
         conn.commit()
         conn.close()
-        logger.info(f"Update Lokasi {loc_id} ({name}): {vehicle_count} Kendaraan")
+        logger.info(f"Update Lokasi {loc_id} ({name}): {vehicle_count} kend → {new_status} (score={risk})")
         return loc_id, vehicle_count, None
     except Exception as e:
         logger.error(f"Gagal proses lokasi {loc_id} ({name}): {e}")

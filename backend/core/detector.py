@@ -65,6 +65,7 @@ class VideoDetector:
         cap = cv2.VideoCapture(stream_url)
         max_vehicle = 0
         max_truck = 0
+        frames_read = 0
 
         start_time = time.time()
         while time.time() - start_time < 10:
@@ -72,6 +73,7 @@ class VideoDetector:
             if not ret:
                 break
 
+            frames_read += 1
             frame = cv2.resize(frame, (1020, 576))
             with _inference_lock:
                 results = self.model.track(
@@ -91,6 +93,9 @@ class VideoDetector:
             max_truck = max(max_truck, trucks)
 
         cap.release()
+        # Kembalikan None jika tidak berhasil baca satu pun frame (stream tidak terjangkau)
+        if frames_read == 0:
+            return None
         return max_vehicle
 
     def detect_file(self, file_path):
@@ -106,9 +111,10 @@ class VideoDetector:
         CLASS_NAMES = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
 
         def _run_inference(frame):
-            frame = cv2.resize(frame, (1020, 576))
+            frame = cv2.resize(frame, (1280, 720))
             with _inference_lock:
-                return self.model(frame, classes=[2, 3, 5, 7], conf=0.3, verbose=False)
+                # conf=0.15 agar kendaraan jauh/malam tetap terdeteksi
+                return self.model(frame, classes=[2, 3, 5, 7], conf=0.15, iou=0.45, verbose=False)
 
         def _count_classes(boxes):
             counts = {}
