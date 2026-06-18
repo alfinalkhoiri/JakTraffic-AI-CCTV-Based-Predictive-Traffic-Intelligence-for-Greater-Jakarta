@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useCallback, useState } from "react";
 import Hls from "hls.js";
 
 const WORKER_URL = process.env.REACT_APP_CCTV_PROXY || "";
+const API = process.env.REACT_APP_API_URL || "";
 
 const SIG = (v) => {
   if (v > 40) return { light: "green",  green: 90, red: 30,  label: "Perpanjang Hijau",   color: "#ef4444" };
@@ -25,18 +26,72 @@ function MiniLight({ active }) {
   );
 }
 
-function LivePreview({ previewUrl }) {
-  const videoRef  = useRef(null);
-  const hlsRef    = useRef(null);
-  const [status, setStatus]     = useState("loading");
-  const [attempt, setAttempt]   = useState(0); // 0=direct, 1=proxy, 2=failed
+function LivePreview({ previewUrl, onStatusChange, onYoloResult }) {
+  const videoRef    = useRef(null);
+  const canvasRef   = useRef(null);
+  const hlsRef      = useRef(null);
+  const intervalRef = useRef(null);
+  const detectingRef = useRef(false);
+
+  const [status, setStatus]         = useState("loading");
+  const [attempt, setAttempt]       = useState(0);
+  const [yoloCount, setYoloCount]   = useState(null);
+  const [yoloImage, setYoloImage]   = useState(null); // annotated image dari YOLO
+
+  const updateStatus = useCallback((s) => {
+    setStatus(s);
+    if (onStatusChange) onStatusChange(s);
+  }, [onStatusChange]);
+
+  /* Auto-YOLO: capture frame → POST ke backend → update count */
+  const captureAndDetect = useCallback(async () => {
+    if (detectingRef.current) return; // cegah concurrent request
+    const video  = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState < 2) return;
+    canvas.width  = video.videoWidth  || 640;
+    canvas.height = video.videoHeight || 360;
+    try {
+      canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    } catch { return; } // CORS tainted — skip silently
+    detectingRef.current = true;
+    try {
+      const res = await fetch(`${API}/api/detect-frame`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: canvas.toDataURL("image/jpeg", 0.92) }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setYoloCount(data.vehicle_count);
+        setYoloImage(data.annotated_image || null);
+        if (onYoloResult) onYoloResult(data.vehicle_count);
+      }
+    } catch { /* backend tidak tersedia */ }
+    finally { detectingRef.current = false; }
+  }, [onYoloResult]);
+
+  /* Mulai auto-detect tiap 6 detik saat stream live */
+  const startAutoDetect = useCallback(() => {
+    clearInterval(intervalRef.current);
+    captureAndDetect();
+    intervalRef.current = setInterval(captureAndDetect, 6000);
+  }, [captureAndDetect]);
+
+  /* Stop detect saat offline/unmount */
+  useEffect(() => () => clearInterval(intervalRef.current), []);
+
+  const updateStatusAndDetect = useCallback((s) => {
+    updateStatus(s);
+    if (s === "live") startAutoDetect();
+    else clearInterval(intervalRef.current);
+  }, [updateStatus, startAutoDetect]);
 
   const startHls = useCallback((src, useProxy) => {
     const video = videoRef.current;
-    if (!video || !src) { setStatus("offline"); return; }
+    if (!video || !src) { updateStatusAndDetect("offline"); return; }
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
 
-    // Coba langsung dulu; kalau gagal dan ada proxy, coba via proxy
     const target = (useProxy && WORKER_URL) ? `${WORKER_URL}/?url=${encodeURIComponent(src)}` : src;
 
     if (Hls.isSupported()) {
@@ -50,38 +105,35 @@ function LivePreview({ previewUrl }) {
       hlsRef.current = hls;
       hls.loadSource(target);
       hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); setStatus("live"); });
+      hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); updateStatusAndDetect("live"); });
       hls.on(Hls.Events.ERROR, (_, d) => {
         if (d.fatal) {
           hls.destroy();
           hlsRef.current = null;
-          // Kalau koneksi langsung gagal dan ada proxy, coba via proxy sekali
-          if (!useProxy && WORKER_URL) {
-            setAttempt(1);
-          } else {
-            setStatus("offline");
-          }
+          if (!useProxy && WORKER_URL) setAttempt(1);
+          else updateStatusAndDetect("offline");
         }
       });
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      // Safari: native HLS, tidak butuh proxy/CORS
       video.src = src;
-      video.onloadedmetadata = () => { video.play().catch(() => {}); setStatus("live"); };
-      video.onerror = () => setStatus("offline");
+      video.onloadedmetadata = () => { video.play().catch(() => {}); updateStatusAndDetect("live"); };
+      video.onerror = () => updateStatusAndDetect("offline");
     } else {
-      setStatus("offline");
+      updateStatusAndDetect("offline");
     }
-  }, []);
+  }, [updateStatusAndDetect]);
 
-  // attempt 0: direct, attempt 1: via proxy, attempt 2: failed
   useEffect(() => {
-    if (!previewUrl) { setStatus("offline"); return; }
-    setStatus("loading");
+    if (!previewUrl) { updateStatusAndDetect("offline"); return; }
+    updateStatus("loading");
     startHls(previewUrl, attempt === 1);
-    return () => { if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } };
-  }, [previewUrl, attempt, startHls]);
+    return () => {
+      if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+      clearInterval(intervalRef.current);
+    };
+  }, [previewUrl, attempt, startHls, updateStatus, updateStatusAndDetect]);
 
-  const retry = () => { setAttempt(0); setStatus("loading"); };
+  const retry = () => { setAttempt(0); updateStatus("loading"); };
 
   return (
     <div style={{ position: "relative", height: 155, background: "#0f172a", overflow: "hidden" }}>
@@ -89,10 +141,19 @@ function LivePreview({ previewUrl }) {
         ref={videoRef}
         muted playsInline autoPlay
         crossOrigin="anonymous"
-        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", opacity: status === "live" ? 1 : 0, transition: "opacity .4s" }}
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", opacity: (status === "live" && !yoloImage) ? 1 : 0, transition: "opacity .4s" }}
       />
+      {/* Annotated YOLO image overlay — tampil setelah deteksi */}
+      {status === "live" && yoloImage && (
+        <img
+          src={`data:image/jpeg;base64,${yoloImage}`}
+          alt="YOLO"
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+        />
+      )}
+      {/* Canvas tersembunyi untuk capture frame YOLO */}
+      <canvas ref={canvasRef} style={{ display: "none" }} />
 
-      {/* Loading / Offline state */}
       {status !== "live" && (
         <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, padding: "0 16px" }}>
           <div style={{ fontSize: 32, opacity: 0.2 }}>📡</div>
@@ -109,23 +170,14 @@ function LivePreview({ previewUrl }) {
             </>
           ) : (
             <>
-              <p style={{ fontSize: 11, color: "#475569", margin: 0, textAlign: "center" }}>
-                Stream tidak terjangkau
-              </p>
+              <p style={{ fontSize: 11, color: "#475569", margin: 0, textAlign: "center" }}>Stream tidak terjangkau</p>
               <div style={{ display: "flex", gap: 6 }}>
-                <button
-                  onClick={retry}
-                  style={{ fontSize: 10, color: "#94a3b8", background: "#1e293b", border: "1px solid #334155", borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}
-                >
+                <button onClick={retry} style={{ fontSize: 10, color: "#94a3b8", background: "#1e293b", border: "1px solid #334155", borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}>
                   ↺ Retry
                 </button>
                 {previewUrl && (
-                  <a
-                    href={previewUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ fontSize: 10, color: "#94a3b8", background: "#1e293b", border: "1px solid #334155", borderRadius: 6, padding: "3px 8px", textDecoration: "none" }}
-                  >
+                  <a href={previewUrl} target="_blank" rel="noopener noreferrer"
+                    style={{ fontSize: 10, color: "#94a3b8", background: "#1e293b", border: "1px solid #334155", borderRadius: 6, padding: "3px 8px", textDecoration: "none" }}>
                     ↗ Buka di Tab Baru
                   </a>
                 )}
@@ -143,27 +195,66 @@ function LivePreview({ previewUrl }) {
         </div>
       )}
 
+      {/* YOLO vehicle count badge */}
+      {status === "live" && yoloCount !== null && (
+        <div style={{ position: "absolute", top: 8, right: 8, background: "rgba(16,185,129,0.9)", borderRadius: 999, padding: "2px 8px" }}>
+          <span style={{ fontSize: 10, color: "white", fontWeight: 700 }}>🔍 {yoloCount} kend</span>
+        </div>
+      )}
+
       <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 40, background: "linear-gradient(to top, rgba(15,23,42,0.95), transparent)", pointerEvents: "none" }} />
     </div>
   );
 }
 
+/* Konversi status DB → label + warna untuk popup */
+function resolveStatus(camStatus, vehicles) {
+  // Prioritaskan cam.status dari DB (lebih akurat dari simulasi kendaraan)
+  const s = (camStatus || "").toUpperCase();
+  if (s === "HIJAU"  || s === "LANCAR") return { label: "LANCAR", color: "#22c55e" };
+  if (s === "KUNING" || s === "RAMAI")  return { label: "RAMAI",  color: "#f97316" };
+  if (s === "MERAH"  || s === "PADAT")  return { label: "PADAT",  color: "#ef4444" };
+  // Fallback ke hitungan kendaraan jika status DB tidak ada
+  const v = vehicles ?? 0;
+  if (v > 40) return { label: "PADAT",  color: "#ef4444" };
+  if (v > 20) return { label: "RAMAI",  color: "#f97316" };
+  return              { label: "LANCAR", color: "#22c55e" };
+}
+
 export default function MapPopup({ cam, effectiveVehicles, onSelectDetail }) {
-  const v   = effectiveVehicles ?? cam.vehicles ?? 0;
-  const rec = SIG(v);
-  const statusLabel = v > 30 ? "PADAT" : v > 15 ? "RAMAI" : "LANCAR";
-  const statusColor = v > 30 ? "#ef4444" : v > 15 ? "#f97316" : "#22c55e";
+  // "loading" → belum tahu, "live" → stream berhasil, "offline" → gagal
+  const [streamStatus, setStreamStatus] = useState("loading");
+  const [yoloLiveCount, setYoloLiveCount] = useState(null);
+
+  const dbV  = effectiveVehicles ?? cam.vehicles ?? 0;
+  // Saat stream live dan YOLO sudah berhasil → pakai hitungan YOLO; lainnya → DB
+  const v    = (streamStatus === "live" && yoloLiveCount !== null) ? yoloLiveCount : dbV;
+  const rec  = SIG(v);
+  const { label: statusLabel, color: statusColor } = resolveStatus(
+    streamStatus === "live" ? undefined : cam.status, // live → hitung dari YOLO count
+    v
+  );
   const isToll = cam.road_type === "toll";
+  const isSimulation = streamStatus === "offline";
 
   return (
     <div style={{ width: 270, fontFamily: "Inter, sans-serif", borderRadius: 12, overflow: "hidden", background: "#1e293b" }}>
       {/* Preview */}
-      <LivePreview previewUrl={cam.preview_url} />
+      <LivePreview
+        previewUrl={cam.preview_url}
+        onStatusChange={setStreamStatus}
+        onYoloResult={setYoloLiveCount}
+      />
 
       {/* Status strip */}
       <div style={{ background: statusColor + "22", borderBottom: `1px solid ${statusColor}40`, padding: "5px 12px", display: "flex", alignItems: "center", gap: 6 }}>
         <span style={{ width: 7, height: 7, borderRadius: "50%", background: statusColor, flexShrink: 0 }} />
         <span style={{ fontSize: 11, fontWeight: 700, color: statusColor }}>{statusLabel}</span>
+        {isSimulation && (
+          <span style={{ fontSize: 9, color: "#64748b", background: "#0f172a", border: "1px solid #334155", borderRadius: 4, padding: "1px 5px", fontWeight: 600 }}>
+            SIMULASI
+          </span>
+        )}
         <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: "auto" }}>{v} kendaraan</span>
       </div>
 

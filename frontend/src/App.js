@@ -30,7 +30,6 @@ import { Route, AlertTriangle, Clock, TrendingUp } from "lucide-react";
 import ChatButton from "./components/ChatButton";
 import ChatPopup from "./components/ChatPopup";
 import MapPopup from "./components/MapPopup";
-import LiveCCTV from "./components/LiveCCTV";
 
 const API = process.env.REACT_APP_API_URL || "";
 
@@ -429,7 +428,6 @@ export default function App() {
   const [tomtomIncidents, setTomtomIncidents] = useState([]);
   const [tomtomFlow,      setTomtomFlow]      = useState(null);
 
-  // YOLO live detect hasil dari LiveCCTV component
   const [liveYolo, setLiveYolo] = useState(null);
 
   // ── Chatbot map control state ──────────────────────────────────────────────
@@ -488,18 +486,20 @@ export default function App() {
     const tollCams = cctv.filter(c => c.road_type === "toll");
     if (!tollCams.length) return;
 
-    // Group by toll road name
-    const kgpg  = tollCams.filter(c => c.name?.includes("KG-PG"))
-                          .sort((a, b) => a.lng - b.lng); // west→east
-    const bckm  = tollCams.filter(c => c.name?.includes("BCKM"))
-                          .sort((a, b) => a.lng - b.lng);
+    const byName = (keyword) => tollCams
+      .filter(c => c.name?.includes(keyword))
+      .sort((a, b) => a.lng - b.lng);
 
     const fetchCorridor = async (cameras, color, name) => {
       if (cameras.length < 2) return null;
-      const wpStr = cameras.map(c => `${c.lng},${c.lat}`).join(";");
+      // Batasi maksimal 10 waypoint agar OSRM tidak timeout
+      const step  = Math.max(1, Math.floor(cameras.length / 10));
+      const picks = cameras.filter((_, i) => i % step === 0 || i === cameras.length - 1);
+      const wpStr = picks.map(c => `${c.lng},${c.lat}`).join(";");
       try {
         const res = await axios.get(
-          `https://router.project-osrm.org/route/v1/driving/${wpStr}?overview=full&geometries=geojson`
+          `https://router.project-osrm.org/route/v1/driving/${wpStr}?overview=full&geometries=geojson`,
+          { timeout: 8000 }
         );
         const coords = res.data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
         return { name, color, points: coords };
@@ -507,8 +507,14 @@ export default function App() {
     };
 
     Promise.all([
-      fetchCorridor(kgpg, "#f59e0b", "Tol Dalam Kota — Kelapa Gading–Pulo Gebang"),
-      fetchCorridor(bckm, "#fb923c", "Tol BCKM — Bekasi–Cawang–Kamp. Melayu"),
+      fetchCorridor(byName("KG-PG"),         "#f59e0b", "Tol KG-PG — Kelapa Gading–Pulo Gebang"),
+      fetchCorridor(byName("BCKM - "),        "#fb923c", "Tol BCKM — Cawang–Bekasi"),
+      fetchCorridor(byName("BCKM Segmen"),    "#f97316", "Tol BCKM Segmen — Duren Sawit–Bekasi Barat"),
+      fetchCorridor(byName("JORR W2"),        "#a78bfa", "Tol JORR W2 — Cengkareng–Ulujami"),
+      fetchCorridor(byName("JORR E1"),        "#34d399", "Tol JORR E1 — Cilincing–Cibitung"),
+      fetchCorridor(byName("JORR Selatan"),   "#60a5fa", "Tol JORR Selatan — Pondok Pinang–Cikunir"),
+      fetchCorridor(byName("Tol Dalam Kota"), "#f472b6", "Tol Dalam Kota"),
+      fetchCorridor(byName("Tol Bekasi"),     "#22d3ee", "Tol Bekasi"),
     ]).then(lines => setTollRoadLines(lines.filter(Boolean)));
   }, [cctv]);
 
@@ -704,7 +710,6 @@ export default function App() {
 
   /* ================= TOMTOM: flow data untuk kamera terpilih ================= */
   useEffect(() => {
-    setLiveYolo(null); // reset YOLO saat pindah kamera
     if (!selected?.lat || !selected?.lng) { setTomtomFlow(null); return; }
     axios.get(`${API}/api/tomtom-flow`, { params: { lat: selected.lat, lng: selected.lng } })
       .then(res => setTomtomFlow(res.data?.currentSpeed ? res.data : null))
@@ -984,17 +989,21 @@ export default function App() {
           {/* ── Toll road corridor overlay ── */}
           {tollRoadLines.map((line, idx) => (
             <React.Fragment key={`toll-road-${idx}`}>
-              {/* Glow border (lebih tebal, lebih transparan) */}
+              {/* Glow / shadow */}
               <Polyline
                 positions={line.points}
-                pathOptions={{ color: line.color, weight: 10, opacity: 0.25, lineCap: "round", lineJoin: "round" }}
+                pathOptions={{ color: line.color, weight: 12, opacity: 0.18, lineCap: "round", lineJoin: "round" }}
                 interactive={false}
               />
               {/* Main line */}
               <Polyline
                 positions={line.points}
-                pathOptions={{ color: line.color, weight: 4, opacity: 0.85, dashArray: "12 5", lineCap: "round" }}
+                pathOptions={{ color: line.color, weight: 5, opacity: 0.9, dashArray: "10 4", lineCap: "round" }}
               >
+                <Tooltip sticky direction="top" offset={[0, -4]}
+                  className="bg-slate-800 text-white text-xs border-0 shadow-lg px-2 py-1 rounded">
+                  🛣️ {line.name}
+                </Tooltip>
                 <Popup>
                   <b style={{color: line.color}}>🛣️ {line.name}</b>
                 </Popup>
@@ -1067,7 +1076,10 @@ export default function App() {
 
           {filteredCctv.map(c => {
             const ev = getEffectiveVehicles(c);
-            const markerStatus = ev > 30 ? "MERAH" : ev > 15 ? "KUNING" : undefined;
+            const dbStatus = (c.status || "").toUpperCase();
+            const markerStatus = (dbStatus === "MERAH" || dbStatus === "PADAT") ? "MERAH"
+              : (dbStatus === "KUNING" || dbStatus === "RAMAI") ? "KUNING"
+              : undefined;
             const isHighlighted = highlighted.includes(c.id);
             const isToll = c.road_type === "toll";
             return (
@@ -1371,21 +1383,8 @@ export default function App() {
           <>
             <h2 className="text-2xl font-bold mb-1">{selected.name}</h2>
             <p className="text-slate-400 mb-2">
-              {liveYolo ? (
-                <span className="text-emerald-400 font-bold">{liveYolo.vehicle_count} kendaraan</span>
-              ) : (
-                <span>{selected.vehicles} kendaraan saat ini</span>
-              )}
-              {liveYolo && <span className="text-slate-600 text-xs ml-1">(YOLO live)</span>}
+              <span>{selected.vehicles} kendaraan saat ini</span>
             </p>
-
-            {/* ── Live CCTV Stream ── */}
-            {selected.preview_url && (
-              <LiveCCTV
-                streamUrl={selected.preview_url}
-                onDetect={(result) => setLiveYolo(result)}
-              />
-            )}
 
             {nowVsUsual && (
               <div className="grid grid-cols-2 gap-4 mb-4">

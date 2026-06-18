@@ -1,23 +1,26 @@
 def calculate_decision(vehicle_count, weather_status):
     score = 0
-    
+
     # 1. Skor Kendaraan
-    if vehicle_count > 30:
-        score += 60
-    elif vehicle_count >= 20:
+    if vehicle_count > 40:
+        score += 80   # MERAH murni tanpa cuaca buruk
+    elif vehicle_count > 25:
+        score += 50   # KUNING (padat)
+    elif vehicle_count >= 15:
+        score += 20   # Ramai tapi masih lancar
+
+    # 2. Skor Cuaca
+    w = (weather_status or "").lower()
+    if "badai" in w or "thunder" in w or "lebat" in w:
+        score += 40
+    elif "hujan" in w or "rain" in w or "gerimis" in w:
         score += 20
-        
-    # 2. Skor Cuaca (Asumsi input: 'Rain', 'Clear', 'Thunderstorm')
-    if "Rain" in weather_status:
-        score += 20
-    elif "Thunderstorm" in weather_status:
-        score += 50
-        
+
     # 3. Klasifikasi
-    if score >= 100:
-        return "MERAH", "Bahaya: Kemacetan & Cuaca Buruk"
+    if score >= 80:
+        return "MERAH", "Bahaya: Kemacetan Padat"
     elif score >= 40:
-        return "KUNING", "Waspada: Padat atau Hujan"
+        return "KUNING", "Waspada: Mulai Padat"
     else:
         return "HIJAU", "Aman: Lancar"
 
