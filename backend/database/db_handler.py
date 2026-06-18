@@ -92,7 +92,13 @@ def get_all_cctv_status():
 
     try:
         cur.execute("""
-            SELECT ct.*, cl.stream_url, cl.road_type, cl.preview_url
+            SELECT ct.id, ct.vehicles, ct.weather, ct.status, ct.risk_score, ct.last_update,
+                   COALESCE(cl.name, ct.name) AS name,
+                   COALESCE(cl.lat,  ct.lat)  AS lat,
+                   COALESCE(cl.lng,  ct.lng)  AS lng,
+                   COALESCE(cl.stream_url,  ct.stream_url)  AS stream_url,
+                   COALESCE(cl.preview_url, ct.preview_url) AS preview_url,
+                   cl.road_type
             FROM current_traffic ct
             LEFT JOIN cctv_locations cl ON ct.id = cl.id
             ORDER BY ct.id
