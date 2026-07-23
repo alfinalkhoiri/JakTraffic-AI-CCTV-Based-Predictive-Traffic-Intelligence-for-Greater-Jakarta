@@ -146,8 +146,12 @@ export default function ChatPopup({ visible, onClose, onMapCommands }) {
   const [llmStatus, setLlmStatus] = useState("checking"); // 'checking' | 'online' | 'offline'
   const [llmModel, setLlmModel] = useState("");
   const [llmError, setLlmError] = useState("");
+  const [listening, setListening]   = useState(false);
+  const [voiceReply, setVoiceReply] = useState(false);
   const listRef = useRef(null);
-  const abortRef = useRef(null); // simpan AbortController streaming saat ini
+  const abortRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const sendRef = useRef(null);   // ref agar STT bisa panggil send() terbaru
 
   // ── Cek status LLM ──────────────────────────────────────────────────────────
   const checkLlmStatus = useCallback(async () => {
@@ -238,11 +242,77 @@ export default function ChatPopup({ visible, onClose, onMapCommands }) {
     });
   }, []);
 
+  // ── TTS: baca respons LLM ─────────────────────────────────────────────────
+  const speakResponse = useCallback((text) => {
+    if (!voiceReply || !('speechSynthesis' in window)) return;
+    const plain = text
+      .replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1')
+      .replace(/`{1,3}[\s\S]*?`{1,3}/g, '').replace(/#{1,6}\s+/g, '')
+      .replace(/\[(.+?)\]\(.+?\)/g, '$1').replace(/>\s+/g, '')
+      .replace(/---+/g, '').replace(/\n{2,}/g, '. ').replace(/\n/g, ' ')
+      .trim().slice(0, 600);
+    window.speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance(plain);
+    utt.lang = 'id-ID'; utt.rate = 1.0; utt.pitch = 1.0;
+    const doSpeak = () => {
+      const voices = window.speechSynthesis.getVoices();
+      const id = voices.find(v => v.lang === 'id-ID') || voices.find(v => v.lang.startsWith('id'));
+      if (id) utt.voice = id;
+      window.speechSynthesis.speak(utt);
+    };
+    window.speechSynthesis.getVoices().length === 0
+      ? window.speechSynthesis.addEventListener('voiceschanged', doSpeak, { once: true })
+      : doSpeak();
+  }, [voiceReply]);
+
+  // ── STT: input suara dari mic ─────────────────────────────────────────────
+  const toggleMic = useCallback(() => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { alert('Browser tidak mendukung pengenalan suara (gunakan Chrome).'); return; }
+
+    if (listening) {
+      recognitionRef.current?.stop();
+      setListening(false);
+      return;
+    }
+
+    const recognition = new SR();
+    recognition.lang = 'id-ID';
+    recognition.continuous = false;
+    recognition.interimResults = true;
+
+    recognition.onresult = (e) => {
+      let interim = '';
+      for (const result of e.results) {
+        if (result.isFinal) {
+          const t = result[0].transcript.trim();
+          if (t) {
+            setInput(t);
+            recognitionRef.current?.stop();
+            // Auto-kirim setelah suara selesai
+            setTimeout(() => sendRef.current?.(t), 100);
+          }
+        } else {
+          interim += result[0].transcript;
+          setInput(interim);
+        }
+      }
+    };
+
+    recognition.onend  = () => setListening(false);
+    recognition.onerror = () => setListening(false);
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
+  }, [listening]);
+
   // ── SEND ───────────────────────────────────────────────────────────────────
-  const send = async () => {
-    const text = input.trim();
+  const send = async (textOverride) => {
+    const text = (textOverride !== undefined ? textOverride : input).trim();
     if (!text || isLoading) return;
     setInput("");
+    sendRef.current = send; // keep ref fresh
     pushMsg({ role: "user", text });
     setIsLoading(true);
 
@@ -346,6 +416,8 @@ export default function ChatPopup({ visible, onClose, onMapCommands }) {
   // ── CHAT MODE — streaming SSE ──────────────────────────────────────────────
   const sendChat = (text) => {
     return new Promise((resolve) => {
+      let accText = ''; // akumulasi teks untuk TTS
+
       // Ambil max 10 pesan terakhir sebagai konteks
       const history = messages
         .filter((m) => !m.pending && !m.editResult && (m.role === "user" || m.role === "assistant"))
@@ -365,9 +437,9 @@ export default function ChatPopup({ visible, onClose, onMapCommands }) {
         history,
         // onChunk — append teks baru
         (chunk) => {
+          accText += chunk;
           setMessages((prev) => {
             const copy = [...prev];
-            // Cari pesan streaming terakhir
             for (let i = copy.length - 1; i >= 0; i--) {
               if (copy[i].streaming) {
                 copy[i] = { ...copy[i], text: copy[i].text + chunk };
@@ -389,6 +461,7 @@ export default function ChatPopup({ visible, onClose, onMapCommands }) {
             }
             return copy;
           });
+          speakResponse(accText); // baca respons jika voice reply aktif
           abortRef.current = null;
           resolve();
         },
@@ -519,7 +592,15 @@ export default function ChatPopup({ visible, onClose, onMapCommands }) {
             <LlmStatusDot status={llmStatus} model={llmModel} error={llmError} />
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          {/* Voice reply toggle */}
+          <button
+            onClick={() => { setVoiceReply(v => !v); if (voiceReply) window.speechSynthesis?.cancel(); }}
+            title={voiceReply ? 'Matikan balas suara' : 'Aktifkan balas suara AI'}
+            className={`text-base px-2 py-1 rounded-lg border transition-colors ${voiceReply ? 'bg-blue-900/50 border-blue-600 text-blue-300' : 'bg-slate-800 border-slate-700 text-slate-500 hover:text-slate-300'}`}
+          >
+            {voiceReply ? '🔊' : '🔇'}
+          </button>
           {/* Mode toggle */}
           <label className="flex items-center gap-1.5 cursor-pointer select-none">
             <div
@@ -610,16 +691,30 @@ export default function ChatPopup({ visible, onClose, onMapCommands }) {
       {/* Input */}
       <div className="p-3 border-t border-slate-800">
         <div className="flex gap-2">
+          {/* Mic button */}
+          <button
+            onClick={toggleMic}
+            disabled={isLoading}
+            title={listening ? 'Berhenti mendengarkan' : 'Bicara ke AI'}
+            className={`flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-base transition-all border ${
+              listening
+                ? 'bg-red-600 border-red-500 text-white animate-pulse'
+                : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white hover:border-slate-500'
+            } ${isLoading ? 'opacity-40 cursor-not-allowed' : ''}`}
+          >
+            {listening ? '⏹' : '🎤'}
+          </button>
+
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) send(); }}
             className="flex-1 bg-slate-800 px-3 py-2 rounded-xl text-white text-sm placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            disabled={isLoading}
-            placeholder={mode === "chat" ? "Tanyakan sesuatu..." : "Contoh: ubah warna header menjadi biru gelap"}
+            disabled={isLoading || listening}
+            placeholder={listening ? '🎤 Mendengarkan...' : mode === "chat" ? "Tanyakan sesuatu..." : "Contoh: ubah warna header menjadi biru gelap"}
           />
           <button
-            onClick={send}
+            onClick={() => send()}
             disabled={isLoading}
             className={`px-4 py-2 rounded-xl text-white text-sm font-semibold transition-colors ${
               isLoading ? "bg-slate-700 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-500"
@@ -628,6 +723,9 @@ export default function ChatPopup({ visible, onClose, onMapCommands }) {
             {isLoading ? "…" : "Kirim"}
           </button>
         </div>
+        {listening && (
+          <p className="text-xs text-red-400 text-center mt-1.5 animate-pulse">Sedang merekam — bicara sekarang...</p>
+        )}
       </div>
     </div>
   );
