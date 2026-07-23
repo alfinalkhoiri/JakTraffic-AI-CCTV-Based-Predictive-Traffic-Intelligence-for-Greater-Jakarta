@@ -867,720 +867,540 @@ export default function App() {
     }
   }
 
+  /* ── computed summary for nav bar ── */
+  const cctvLancar = cctv.filter(c => (c.vehicles || 0) <= 20).length;
+  const cctvRamai  = cctv.filter(c => (c.vehicles || 0) > 20 && (c.vehicles || 0) <= 40).length;
+  const cctvPadat  = cctv.filter(c => (c.vehicles || 0) > 40).length;
+
+  const S = {
+    /* base */
+    root:    { position:'relative', width:'100vw', height:'100vh', overflow:'hidden', background:'#020b18', fontFamily:'system-ui,-apple-system,sans-serif', color:'#f0f9ff' },
+    /* top nav */
+    nav:     { position:'absolute', top:0, left:0, right:0, zIndex:2000, height:52, background:'rgba(2,11,24,0.93)', backdropFilter:'blur(16px)', WebkitBackdropFilter:'blur(16px)', borderBottom:'1px solid rgba(56,189,248,0.1)', display:'flex', alignItems:'center', padding:'0 14px', gap:10 },
+    /* left panel */
+    panel:   { position:'absolute', top:60, left:12, bottom:12, zIndex:1000, width:316, background:'rgba(6,17,40,0.93)', backdropFilter:'blur(16px)', WebkitBackdropFilter:'blur(16px)', border:'1px solid rgba(56,189,248,0.1)', borderRadius:12, display:'flex', flexDirection:'column', overflow:'hidden' },
+    panelHdr:{ padding:'14px 16px 10px', borderBottom:'1px solid rgba(255,255,255,0.06)', flexShrink:0 },
+    panelBody:{ flex:1, overflowY:'auto', padding:'12px 14px' },
+    panelFtr :{ padding:'10px 14px 14px', borderTop:'1px solid rgba(255,255,255,0.06)', flexShrink:0 },
+    /* cards */
+    card:    { background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:10, padding:'12px 14px', marginBottom:10 },
+    /* traffic status colors */
+    lancar:  { color:'#10b981' },
+    ramai:   { color:'#f59e0b' },
+    padat:   { color:'#f43f5e' },
+    /* pill badge */
+    pill:    (c,bg,bd) => ({ display:'inline-flex', alignItems:'center', gap:5, background:bg, border:`1px solid ${bd}`, borderRadius:6, padding:'3px 8px' }),
+    /* button */
+    btn:     (active) => ({ background: active?'rgba(56,189,248,0.15)':'rgba(255,255,255,0.05)', border:`1px solid ${active?'rgba(56,189,248,0.4)':'rgba(255,255,255,0.1)'}`, borderRadius:7, padding:'6px 12px', color: active?'#38bdf8':'#94a3b8', fontSize:11, fontWeight:700, cursor:'pointer', transition:'all .15s' }),
+    btnSm:   (active,c='#38bdf8') => ({ flex:1, textAlign:'center', padding:'7px 0', borderRadius:8, fontSize:11, fontWeight:700, cursor:'pointer', border:'none', background:active?c:'rgba(255,255,255,0.06)', color:active?'#fff':'#64748b', transition:'all .15s' }),
+    label:   { fontSize:9, fontWeight:700, letterSpacing:0.8, color:'#475569', textTransform:'uppercase', marginBottom:4 },
+    big:     { fontSize:32, fontWeight:900, lineHeight:1, fontVariantNumeric:'tabular-nums' },
+    sep:     { height:1, background:'rgba(255,255,255,0.06)', margin:'10px 0' },
+  };
+
   return (
     <>
-    <div className="flex h-screen bg-slate-950 text-white overflow-hidden">
-      {/* ================= MAP ================= */}
-      <div className="flex-1 relative">
-        {eta && (
-          <div className="absolute top-4 right-4 z-[1000] bg-slate-900/95 backdrop-blur-sm rounded-xl shadow-2xl border border-slate-700 w-56">
-            {/* Header: Asal → Tujuan + Tombol tutup */}
-            <div className="flex items-start justify-between gap-1 px-3 pt-3 pb-2 border-b border-slate-700/60">
-              <div className="text-[11px] leading-snug">
-                {routeNames ? (
-                  <>
-                    <span className="text-white font-semibold">{routeNames.from}</span>
-                    <span className="text-slate-400 mx-1">→</span>
-                    <span className="text-white font-semibold">{routeNames.to}</span>
-                  </>
-                ) : (
-                  <span className="text-slate-400">Rute Aktif</span>
-                )}
+    <div style={S.root}>
+      {/* ══ TOPNAV ══════════════════════════════════════════════════ */}
+      <nav style={S.nav}>
+        {/* Logo */}
+        <div style={{ display:'flex', alignItems:'center', gap:8, flexShrink:0 }}>
+          <div style={{ width:30, height:30, borderRadius:7, background:'linear-gradient(135deg,#0ea5e9,#2563eb)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:16, color:'#fff', boxShadow:'0 0 14px rgba(14,165,233,.45)', flexShrink:0 }}>J</div>
+          <div>
+            <div style={{ fontWeight:800, fontSize:13, letterSpacing:-.3 }}>JakTraffic</div>
+            <div style={{ fontSize:9, color:'#475569', lineHeight:1, marginTop:1 }}>Jakarta AI Traffic</div>
+          </div>
+        </div>
+        <div style={{ width:1, height:20, background:'#1e3a5f', margin:'0 2px', flexShrink:0 }} />
+        {/* Traffic summary */}
+        {cctv.length > 0 && (
+          <div style={{ display:'flex', gap:5, flex:1 }}>
+            {[
+              { label:'LANCAR', n:cctvLancar, c:'#10b981', bg:'rgba(16,185,129,.1)',  bd:'rgba(16,185,129,.22)' },
+              { label:'RAMAI',  n:cctvRamai,  c:'#f59e0b', bg:'rgba(245,158,11,.1)', bd:'rgba(245,158,11,.22)' },
+              { label:'PADAT',  n:cctvPadat,  c:'#f43f5e', bg:'rgba(244,63,94,.1)',   bd:'rgba(244,63,94,.22)'  },
+            ].map(s => (
+              <div key={s.label} style={S.pill(s.c, s.bg, s.bd)}>
+                <span style={{ width:6, height:6, borderRadius:'50%', background:s.c, boxShadow:`0 0 5px ${s.c}`, flexShrink:0 }} />
+                <span style={{ fontSize:9, fontWeight:700, color:s.c, letterSpacing:.7 }}>{s.label}</span>
+                <span style={{ fontSize:16, fontWeight:900, color:'#f0f9ff', fontVariantNumeric:'tabular-nums', lineHeight:1 }}>{s.n}</span>
               </div>
-              <button
-                onClick={() => {
-                  setRouteSegments([]);
-                  setEta(null);
-                  setStartPoint(null);
-                  setEndPoint(null);
-                  setRouteNames(null);
-                  setRouteSteps([]);
-                  setWaypointETAs([]);
-                }}
-                className="text-slate-500 hover:text-white text-xs leading-none flex-shrink-0 mt-0.5"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* ETA & Jarak */}
-            <div className="flex gap-3 px-3 py-2 border-b border-slate-700/60">
-              <div>
-                <p className="text-[9px] text-slate-400 uppercase tracking-wide">ETA</p>
-                <p className="text-lg font-bold leading-tight">{eta.time} <span className="text-xs font-normal text-slate-400">mnt</span></p>
-              </div>
-              <div className="w-px bg-slate-700" />
-              <div>
-                <p className="text-[9px] text-slate-400 uppercase tracking-wide">Jarak</p>
-                <p className="text-lg font-bold leading-tight">{eta.distance} <span className="text-xs font-normal text-slate-400">km</span></p>
-              </div>
-            </div>
-
-            {/* Status Rute */}
-            <div className={`text-[11px] font-bold px-3 py-1.5 border-b border-slate-700/60 ${routeDecisionColor}`}>
-              {routeDecisionLabel}
-            </div>
-
-            {/* Petunjuk Arah */}
-            {routeSteps.length > 0 && (
-              <>
-                <p className="text-[9px] text-slate-500 uppercase tracking-wide px-3 pt-2 pb-0.5">
-                  Petunjuk Arah
-                </p>
-                <div className="overflow-y-auto max-h-28">
-                  {routeSteps.map((step, i) => (
-                    <div
-                      key={i}
-                      className={`flex items-start gap-2 px-3 py-1.5 ${i < routeSteps.length - 1 ? "border-b border-slate-800/50" : ""}`}
-                    >
-                      <span className="text-sm leading-none mt-0.5 w-4 text-center flex-shrink-0">
-                        {maneuverIcon(step.type, step.modifier)}
-                      </span>
-                      <div className="min-w-0">
-                        <p className="text-xs font-medium leading-tight">
-                          {maneuverLabel(step.type, step.modifier)}
-                        </p>
-                        {step.name && (
-                          <p className="text-[10px] text-slate-400 truncate">{step.name}</p>
-                        )}
-                        {step.distance > 0 && (
-                          <p className="text-[10px] text-slate-500">{fmtDist(step.distance)}</p>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
+            ))}
           </div>
         )}
+        {/* Right controls */}
+        <div style={{ display:'flex', alignItems:'center', gap:7, marginLeft:'auto', flexShrink:0 }}>
+          {predictionMode !== 'now' && (
+            <span style={{ background:'rgba(59,130,246,.15)', border:'1px solid rgba(59,130,246,.3)', borderRadius:5, padding:'2px 7px', fontSize:9, color:'#60a5fa', fontWeight:700, letterSpacing:.6 }}>
+              PREDIKSI {predictionMode}m
+            </span>
+          )}
+          <button onClick={() => setShowChat(v => !v)} style={S.btn(showChat)}>🤖 AI Chat</button>
+          <a href="/admin" style={{ fontSize:10, color:'#64748b', textDecoration:'none', padding:'5px 10px', background:'rgba(255,255,255,.04)', borderRadius:7, border:'1px solid rgba(255,255,255,.07)', fontWeight:600 }}>⚙ Operator</a>
+        </div>
+      </nav>
 
-        <MapContainer center={[-6.22, 106.833]} zoom={11} className="h-full">
-          <TileLayer url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png" />
-          <MapClickHandler onPick={handleMapPick} />
-          {/* Chatbot fly-to handler */}
-          {mapFlyTo && <FlyToHandler target={mapFlyTo} />}
+      {/* ══ MAP ════════════════════════════════════════════════════ */}
+      <MapContainer center={[-6.2, 106.816]} zoom={12} style={{ position:'absolute', inset:0, zIndex:0 }} zoomControl={false}>
+        <TileLayer attribution='&copy; <a href="https://carto.com">CARTO</a>' url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
+        <MapClickHandler onPick={handleMapPick} />
+        <FlyToHandler target={mapFlyTo} />
 
-          {startPoint && (
-            <Marker
-            position={startPoint}
-            icon={startIcon}
-            draggable
-            eventHandlers={{
-              dragend: e => setStartPoint(e.target.getLatLng())
-            }}
-          >
-            <Popup>Start</Popup>
+        {startPoint && (
+          <Marker position={[startPoint.lat, startPoint.lng]} icon={startIcon} draggable eventHandlers={{ dragend: e => setStartPoint(e.target.getLatLng()) }}>
+            <Popup>Titik Awal</Popup>
           </Marker>
         )}
-        
         {endPoint && (
-          <Marker
-            position={endPoint}
-            icon={endIcon}
-            draggable
-            eventHandlers={{
-              dragend: e => setEndPoint(e.target.getLatLng())
-            }}
-          >
-            <Popup>Destination</Popup>
+          <Marker position={[endPoint.lat, endPoint.lng]} icon={endIcon} draggable eventHandlers={{ dragend: e => setEndPoint(e.target.getLatLng()) }}>
+            <Popup>Tujuan</Popup>
           </Marker>
-          )}
+        )}
 
-          {/* ── Toll road corridor overlay ── */}
-          {tollRoadLines.filter(line => line.points?.length >= 2).map((line, idx) => (
-            <React.Fragment key={`toll-road-${idx}`}>
-              {/* Glow / shadow */}
-              <Polyline
-                positions={line.points}
-                pathOptions={{ color: line.color, weight: 12, opacity: 0.18, lineCap: "round", lineJoin: "round" }}
-                interactive={false}
-              />
-              {/* Main line */}
-              <Polyline
-                positions={line.points}
-                pathOptions={{ color: line.color, weight: 5, opacity: 0.9, dashArray: "10 4", lineCap: "round" }}
-              >
-                <LeafletTooltip sticky direction="top" offset={[0, -4]}
-                  className="bg-slate-800 text-white text-xs border-0 shadow-lg px-2 py-1 rounded">
-                  🛣️ {line.name}
-                </LeafletTooltip>
-                <Popup>
-                  <b style={{color: line.color}}>🛣️ {line.name}</b>
-                </Popup>
-              </Polyline>
-            </React.Fragment>
-          ))}
+        {tollRoadLines.filter(line => line.points?.length >= 2).map((line, idx) => (
+          <React.Fragment key={`toll-road-${idx}`}>
+            <Polyline positions={line.points} pathOptions={{ color: line.color, weight:12, opacity:.18, lineCap:'round', lineJoin:'round' }} interactive={false} />
+            <Polyline positions={line.points} pathOptions={{ color: line.color, weight:5, opacity:.9, dashArray:'10 4', lineCap:'round' }}>
+              <LeafletTooltip sticky direction="top" offset={[0,-4]}>🛣️ {line.name}</LeafletTooltip>
+              <Popup><b style={{ color: line.color }}>🛣️ {line.name}</b></Popup>
+            </Polyline>
+          </React.Fragment>
+        ))}
 
-          {routeSegments.map((seg, idx) => (
-            <Polyline
-              key={idx}
-              positions={seg.points}
-              pathOptions={{
-                color:     seg.color,
-                weight:    6,
-                opacity:   seg.dashed ? 0.6 : 0.85,
-                dashArray: seg.dashed ? "10 7" : null,
-              }}
-            />
-          ))}
+        {routeSegments.map((seg, idx) => (
+          <Polyline key={idx} positions={seg.points} pathOptions={{ color:seg.color, weight:6, opacity:seg.dashed?.6:.85, dashArray:seg.dashed?'10 7':null }} />
+        ))}
 
-          {waypointETAs.filter(wp => wp.lat != null && wp.lng != null).map(wp => (
-            <Marker
-              key={`eta-${wp.cctv_id}`}
-              position={[wp.lat, wp.lng]}
-              icon={etaBadgeIcon(wp.segment_min, wp.segment_km, wp.isDestination)}
-              interactive={false}
-            />
-          ))}
+        {waypointETAs.filter(wp => wp.lat != null && wp.lng != null).map(wp => (
+          <Marker key={`eta-${wp.cctv_id}`} position={[wp.lat, wp.lng]} icon={etaBadgeIcon(wp.segment_min, wp.segment_km, wp.isDestination)} interactive={false} />
+        ))}
 
-          {/* ── TomTom Incidents ── */}
-          {tomtomIncidents.filter(inc => inc.lat != null && inc.lng != null).map((inc, i) => (
-            <Marker
-              key={`inc-${i}`}
-              position={[inc.lat, inc.lng]}
-              icon={incidentIcon(inc.category)}
-              zIndexOffset={500}
-            >
-              <Popup>
-                <div style={{ color: "#0f172a", fontSize: 12, maxWidth: 200, lineHeight: 1.4 }}>
-                  <b>{INCIDENT_LABELS[inc.category] || "Insiden"}</b>
-                  {inc.description && <p style={{ margin: "3px 0 0" }}>{inc.description}</p>}
-                  {(inc.from || inc.to) && (
-                    <p style={{ margin: "3px 0 0", color: "#64748b", fontSize: 10 }}>
-                      {inc.from}{inc.to ? ` → ${inc.to}` : ""}
-                    </p>
-                  )}
-                </div>
+        {tomtomIncidents.filter(inc => inc.lat != null && inc.lng != null).map((inc, i) => (
+          <Marker key={`inc-${i}`} position={[inc.lat, inc.lng]} icon={incidentIcon(inc.category)} zIndexOffset={500}>
+            <Popup>
+              <div style={{ color:'#0f172a', fontSize:12, maxWidth:200, lineHeight:1.4 }}>
+                <b>{INCIDENT_LABELS[inc.category] || 'Insiden'}</b>
+                {inc.description && <p style={{ margin:'3px 0 0' }}>{inc.description}</p>}
+                {(inc.from || inc.to) && <p style={{ margin:'3px 0 0', color:'#64748b', fontSize:10 }}>{inc.from}{inc.to ? ` → ${inc.to}` : ''}</p>}
+              </div>
+            </Popup>
+          </Marker>
+        ))}
+
+        {filteredCctv.map(c => {
+          const ev = getEffectiveVehicles(c);
+          const color = ev > 30 ? '#ef4444' : ev > 15 ? '#f97316' : '#22c55e';
+          return <Circle key={`zone-${c.id}`} center={[c.lat, c.lng]} radius={c.road_type==='toll'?200:400} pathOptions={{ color, fillColor:color, fillOpacity:.07, weight:1, opacity:.2 }} />;
+        })}
+
+        {filteredCctv.map(c => {
+          const ev = getEffectiveVehicles(c);
+          const dbStatus = (c.status||'').toUpperCase();
+          const markerStatus = (dbStatus==='MERAH'||dbStatus==='PADAT') ? 'MERAH' : (dbStatus==='KUNING'||dbStatus==='RAMAI') ? 'KUNING' : undefined;
+          const isHighlighted = highlighted.includes(c.id);
+          return (
+            <Marker key={c.id} position={[c.lat, c.lng]} icon={c.road_type==='toll'?tollIcon(markerStatus,isHighlighted):pulseIcon(markerStatus,isHighlighted)} eventHandlers={{ click: () => { setCompareMode(null); setHighlighted([]); } }}>
+              <Popup className="cctv-popup" maxWidth={270} minWidth={270} autoPan>
+                <MapPopup cam={c} effectiveVehicles={ev} onSelectDetail={() => { setSelected(c); setCompareMode(null); setHighlighted([]); }} />
               </Popup>
             </Marker>
-          ))}
+          );
+        })}
+      </MapContainer>
 
-          {filteredCctv.map(c => {
-            const ev    = getEffectiveVehicles(c);
-            const color = ev > 30 ? "#ef4444" : ev > 15 ? "#f97316" : "#22c55e";
-            return (
-              <Circle
-                key={`zone-${c.id}`}
-                center={[c.lat, c.lng]}
-                radius={c.road_type === "toll" ? 200 : 400}
-                pathOptions={{
-                  color:       color,
-                  fillColor:   color,
-                  fillOpacity: 0.07,
-                  weight:      1,
-                  opacity:     0.2,
-                }}
-              />
-            );
-          })}
+      {/* ══ LEFT PANEL ═════════════════════════════════════════════ */}
+      <aside style={{ ...S.panel, display: showPanel || window.innerWidth >= 768 ? 'flex' : 'none' }}>
 
-          {filteredCctv.map(c => {
-            const ev = getEffectiveVehicles(c);
-            const dbStatus = (c.status || "").toUpperCase();
-            const markerStatus = (dbStatus === "MERAH" || dbStatus === "PADAT") ? "MERAH"
-              : (dbStatus === "KUNING" || dbStatus === "RAMAI") ? "KUNING"
-              : undefined;
-            const isHighlighted = highlighted.includes(c.id);
-            const isToll = c.road_type === "toll";
-            return (
-              <Marker
-                key={c.id}
-                position={[c.lat, c.lng]}
-                icon={isToll ? tollIcon(markerStatus, isHighlighted) : pulseIcon(markerStatus, isHighlighted)}
-                eventHandlers={{ click: () => {
-                  setCompareMode(null);
-                  setHighlighted([]);
-                }}}
-              >
-                <Popup className="cctv-popup" maxWidth={270} minWidth={270} autoPan>
-                  <MapPopup
-                    cam={c}
-                    effectiveVehicles={ev}
-                    onSelectDetail={() => {
-                      setSelected(c);
-                      setCompareMode(null);
-                      setHighlighted([]);
-                    }}
-                  />
-                </Popup>
-              </Marker>
-            );
-          })}
-        </MapContainer>
-
-        {/* Map legend */}
-        <div className="absolute bottom-6 left-4 z-[1000] bg-slate-900/90 backdrop-blur-sm rounded-lg border border-slate-700 px-3 py-2 text-[10px] text-slate-300 space-y-1 pointer-events-none">
-          <div className="flex items-center gap-2">
-            <span style={{display:"inline-block",width:12,height:12,borderRadius:"50%",background:"#22c55e",border:"1.5px solid white"}}></span>
-            <span>CCTV Jalan Biasa</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span style={{display:"inline-block",width:11,height:11,transform:"rotate(45deg)",background:"#22c55e",border:"1.5px solid white",borderRadius:"2px"}}></span>
-            <span>CCTV Jalan Tol</span>
-          </div>
-          {tomtomIncidents.length > 0 && (
-            <div className="flex items-center gap-2">
-              <span style={{display:"inline-block",width:12,height:12,background:"#f97316",border:"1.5px solid white",borderRadius:"2px",fontSize:8,lineHeight:"12px",textAlign:"center"}}>⚠</span>
-              <span>Insiden TomTom ({tomtomIncidents.length})</span>
+        {/* ── PANEL HEADER ── */}
+        <div style={S.panelHdr}>
+          {selected ? (
+            <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:8 }}>
+              <div>
+                <div style={{ fontSize:9, fontWeight:700, color:'#38bdf8', letterSpacing:.8, marginBottom:3 }}>
+                  {selected.road_type==='toll' ? '🛣️ JALAN TOL' : '📍 KAMERA CCTV'}
+                </div>
+                <div style={{ fontSize:16, fontWeight:800, lineHeight:1.2 }}>{selected.name}</div>
+              </div>
+              <button onClick={() => setSelected(null)} style={{ background:'rgba(255,255,255,.07)', border:'1px solid rgba(255,255,255,.1)', borderRadius:7, padding:'4px 8px', color:'#64748b', fontSize:11, cursor:'pointer', flexShrink:0 }}>✕</button>
+            </div>
+          ) : isRoutingActive ? (
+            <div>
+              <div style={{ fontSize:9, fontWeight:700, color:'#38bdf8', letterSpacing:.8, marginBottom:3 }}>🗺️ RUTE AKTIF</div>
+              <div style={{ fontSize:13, fontWeight:700 }}>
+                {routeNames ? <>{routeNames.from} <span style={{ color:'#38bdf8' }}>→</span> {routeNames.to}</> : 'Menghitung rute...'}
+              </div>
+            </div>
+          ) : compareMode ? (
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+              <div>
+                <div style={{ fontSize:9, fontWeight:700, color:'#38bdf8', letterSpacing:.8, marginBottom:2 }}>⚖️ MODE PERBANDINGAN</div>
+                <div style={{ fontSize:12, color:'#94a3b8' }}>Diaktifkan oleh AI</div>
+              </div>
+              <button onClick={() => { setCompareMode(null); setHighlighted([]); }} style={{ background:'rgba(255,255,255,.07)', border:'1px solid rgba(255,255,255,.1)', borderRadius:7, padding:'4px 8px', color:'#64748b', fontSize:11, cursor:'pointer' }}>✕ Tutup</button>
+            </div>
+          ) : (
+            <div>
+              <div style={{ fontSize:14, fontWeight:800, marginBottom:2 }}>Peta Lalu Lintas Jakarta</div>
+              <div style={{ fontSize:11, color:'#64748b' }}>Klik peta untuk navigasi · Klik kamera untuk analisis</div>
             </div>
           )}
         </div>
 
-        {/* Mobile backdrop */}
-        {showPanel && (
-          <div
-            className="md:hidden absolute inset-0 bg-black/30 z-[1400]"
-            onClick={() => setShowPanel(false)}
-          />
-        )}
-        {/* Mobile panel toggle */}
-        <button
-          onClick={() => setShowPanel(p => !p)}
-          className="md:hidden absolute bottom-6 left-1/2 -translate-x-1/2 z-[1100] bg-slate-900/90 backdrop-blur-sm border border-slate-700 text-white text-xs font-bold px-5 py-2.5 rounded-full shadow-xl flex items-center gap-2"
-        >
-          {showPanel ? "✕ Tutup" : "📊 Info"}
-        </button>
-      </div>
+        {/* ── PANEL BODY ── */}
+        <div style={S.panelBody}>
 
-      {/* ================= SIDEBAR ================= */}
-      <div className={`fixed bottom-0 left-0 right-0 h-[78vh] z-[1500] bg-slate-950 border-t border-slate-700 rounded-t-2xl overflow-y-auto px-4 pt-2 pb-4 transition-transform duration-300 ease-in-out md:static md:w-[36%] md:h-auto md:overflow-y-auto md:p-6 md:border-t-0 md:border-l md:border-slate-800 md:rounded-none md:translate-y-0 md:flex-none ${showPanel ? "translate-y-0" : "translate-y-full"}`}>
-        {/* Mobile drag handle */}
-        <div className="md:hidden flex justify-center mb-3 pt-1">
-          <div className="w-10 h-1 bg-slate-700 rounded-full" />
-        </div>
-        {/* PREDICTION TIME SELECTOR */}
-        <div className="mb-5 bg-slate-900 p-3 rounded-xl border border-slate-800">
-          <div className="flex items-center gap-2 mb-2">
-            <Clock size={14} className="text-blue-400" />
-            <p className="text-xs font-bold text-slate-400 uppercase">Mode Waktu</p>
+          {/* ——— MODE WAKTU ——— */}
+          <div style={S.card}>
+            <div style={S.label}>Mode Tampilan</div>
+            <div style={{ display:'flex', gap:5 }}>
+              {[{l:'Sekarang', v:'now'},{l:'15 Mnt', v:'15'},{l:'30 Mnt', v:'30'}].map(o => (
+                <button key={o.v} onClick={() => setPredictionMode(o.v)} style={S.btnSm(predictionMode===o.v)}>{o.l}</button>
+              ))}
+            </div>
+            {predictionMode !== 'now' && (
+              <div style={{ marginTop:6, fontSize:9, color:'#60a5fa', display:'flex', alignItems:'center', gap:4 }}>
+                <TrendingUp size={9} /> Prediksi Transformer AI — {predictionMode} menit ke depan
+              </div>
+            )}
           </div>
-          <div className="flex gap-2">
-            {[{label: "Sekarang", val: "now"}, {label: "15 Menit", val: "15"}, {label: "30 Menit", val: "30"}].map(opt => (
-              <button
-                key={opt.val}
-                onClick={() => setPredictionMode(opt.val)}
-                className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
-                  predictionMode === opt.val
-                    ? "bg-blue-600 text-white shadow-lg shadow-blue-600/30"
-                    : "bg-slate-800 text-slate-400 hover:bg-slate-700"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          {predictionMode !== "now" && (
-            <p className="text-[10px] text-blue-400 mt-2 flex items-center gap-1">
-              <TrendingUp size={10} /> Prediksi {predictionMode} menit ke depan (Transformer AI)
-            </p>
-          )}
-        </div>
 
-        {/* ROUTE MODE SELECTOR */}
-        <div className="mb-5 bg-slate-900 p-3 rounded-xl border border-slate-800">
-          <div className="flex items-center gap-2 mb-2">
-            <Route size={14} className="text-amber-400" />
-            <p className="text-xs font-bold text-slate-400 uppercase">Mode Rute</p>
-          </div>
-          <div className="flex gap-2">
-            {[
-              { label: "Semua",    val: "all",  icon: "🗺️" },
-              { label: "Non-Tol", val: "city", icon: "🏙️" },
-              { label: "Tol",     val: "toll", icon: "🛣️" },
-            ].map(opt => (
-              <button
-                key={opt.val}
-                onClick={() => setRouteMode(opt.val)}
-                className={`flex-1 px-2 py-2 rounded-lg text-xs font-bold transition-all flex flex-col items-center gap-0.5 ${
-                  routeMode === opt.val
-                    ? "bg-amber-600 text-white shadow-lg shadow-amber-600/30"
-                    : "bg-slate-800 text-slate-400 hover:bg-slate-700"
-                }`}
-              >
-                <span>{opt.icon}</span>
-                <span>{opt.label}</span>
-              </button>
-            ))}
-          </div>
-          <p className="text-[10px] text-slate-500 mt-2">
-            {routeMode === "city" && "🏙️ Rute jalan biasa — menghindari jalan tol"}
-            {routeMode === "toll" && "🛣️ Menampilkan CCTV tol dalam kota Jakarta"}
-            {routeMode === "all"  && "🗺️ Tampilkan semua CCTV & rute terbaik"}
-          </p>
-        </div>
-
-        {/* PREDICTION RESULTS TABLE */}
-        {predictionData && predictionMode !== "now" && !selected && !isRoutingActive && (
-          <div className="mb-5">
-            <h2 className="text-lg font-bold mb-3 flex items-center gap-2">
-              <TrendingUp size={18} className="text-blue-400" />
-              Prediksi {predictionData.horizon} Menit
-            </h2>
-            <div className="space-y-2">
-              {predictionData.predictions?.map(p => (
-                <div key={p.location_id} className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-bold">{p.name}</p>
-                    <p className="text-xs text-slate-400">Saat ini: {p.current_vehicles} kendaraan</p>
-                  </div>
-                  <div className="text-right">
-                    <p className={`text-lg font-bold ${
-                      p.status === "PADAT" ? "text-red-400" : p.status === "RAMAI" ? "text-yellow-400" : "text-emerald-400"
-                    }`}>{p.predicted_vehicles}</p>
-                    <p className={`text-[10px] font-bold ${
-                      p.status === "PADAT" ? "text-red-400" : p.status === "RAMAI" ? "text-yellow-400" : "text-emerald-400"
-                    }`}>{p.status}</p>
-                  </div>
-                </div>
+          {/* ——— FILTER RUTE ——— */}
+          <div style={S.card}>
+            <div style={S.label}>Filter Kamera</div>
+            <div style={{ display:'flex', gap:5 }}>
+              {[{l:'🗺️ Semua', v:'all'},{l:'🏙️ Kota', v:'city'},{l:'🛣️ Tol', v:'toll'}].map(o => (
+                <button key={o.v} onClick={() => setRouteMode(o.v)} style={S.btnSm(routeMode===o.v,'#f59e0b')}>{o.l}</button>
               ))}
             </div>
           </div>
-        )}
 
-        {/* COMPARE MODE ─ sidebar ditampilkan saat chatbot trigger perbandingan */}
-        {compareMode && !selected && !isRoutingActive && (
-          <div className="mb-4">
-            {/* Header compare */}
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-lg font-bold flex items-center gap-2">
-                <span className="text-blue-400">⚖️</span> Perbandingan Lokasi
-              </h2>
-              <button
-                onClick={() => { setCompareMode(null); setHighlighted([]); }}
-                className="text-xs text-slate-400 hover:text-white bg-slate-800 px-2 py-1 rounded-lg transition-colors"
-              >
-                ✕ Tutup
-              </button>
-            </div>
+          {/* ——— SELECTED CCTV DETAIL ——— */}
+          {selected && (
+            <>
+              {/* Status + Vehicles */}
+              <div style={S.card}>
+                <div style={{ display:'flex', alignItems:'flex-end', justifyContent:'space-between', marginBottom:10 }}>
+                  <div>
+                    <div style={S.label}>Kendaraan Saat Ini</div>
+                    <div style={{ ...S.big, color: selected.vehicles > 40 ? '#f43f5e' : selected.vehicles > 20 ? '#f59e0b' : '#10b981' }}>
+                      {selected.vehicles}
+                    </div>
+                    <div style={{ fontSize:11, color:'#64748b', marginTop:2 }}>unit terdeteksi</div>
+                  </div>
+                  {nowVsUsual && (
+                    <div style={{ textAlign:'right' }}>
+                      <div style={S.label}>Biasanya</div>
+                      <div style={{ fontSize:22, fontWeight:800, color:'#94a3b8', fontVariantNumeric:'tabular-nums' }}>{Math.round(nowVsUsual.usual)}</div>
+                      {nowVsUsual.diff_percent != null && (
+                        <div style={{ fontSize:10, fontWeight:700, color: nowVsUsual.diff_percent > 0 ? '#f43f5e' : '#10b981' }}>
+                          {nowVsUsual.diff_percent > 0 ? '▲' : '▼'} {Math.abs(nowVsUsual.diff_percent)}%
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {/* Status badge */}
+                {(() => {
+                  const v = selected.vehicles;
+                  const isUnusual = nowVsUsual?.status === 'UNUSUAL';
+                  const label = v > 40 ? 'PADAT' : v > 20 ? 'RAMAI' : 'LANCAR';
+                  const color = v > 40 ? '#f43f5e' : v > 20 ? '#f59e0b' : '#10b981';
+                  const bg    = v > 40 ? 'rgba(244,63,94,.1)' : v > 20 ? 'rgba(245,158,11,.1)' : 'rgba(16,185,129,.1)';
+                  return (
+                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                      <div style={{ ...S.pill(color,bg,'transparent'), borderRadius:8, padding:'5px 12px', gap:6 }}>
+                        <span style={{ width:7, height:7, borderRadius:'50%', background:color, boxShadow:`0 0 6px ${color}` }} />
+                        <span style={{ fontSize:11, fontWeight:800, color, letterSpacing:.5 }}>{label}</span>
+                      </div>
+                      {isUnusual && <span style={{ fontSize:10, color:'#f59e0b', fontWeight:700 }}>⚠ Di atas normal</span>}
+                    </div>
+                  );
+                })()}
+              </div>
 
-            {/* Label chatbot */}
-            <p className="text-[10px] text-blue-400 mb-3 flex items-center gap-1">
-              <span>🤖</span> Diaktifkan oleh AI Assistant
-            </p>
-
-            {/* 2 kolom per lokasi */}
-            <div className="grid grid-cols-2 gap-3">
-              {compareMode.ids.map((locId, colIdx) => {
-                const d = compareData[locId];
-                const colColor  = colIdx === 0 ? "#3b82f6" : "#8b5cf6"; // biru vs ungu
-                const bgClass   = colIdx === 0
-                  ? "border-blue-500/40 bg-blue-500/5"
-                  : "border-violet-500/40 bg-violet-500/5";
-                const nameColor = colIdx === 0 ? "text-blue-400" : "text-violet-400";
-
-                if (!d) return (
-                  <div key={locId} className={`rounded-xl border p-3 ${bgClass} flex items-center justify-center`}>
-                    <span className="text-slate-500 text-xs">Memuat...</span>
+              {/* Sinyal Rekomendasi */}
+              {selected.has_signal ? (() => {
+                const rec = getSignalRec(selected.vehicles);
+                return (
+                  <div style={{ ...S.card, borderColor: rec.dot + '40' }}>
+                    <div style={S.label}>🚦 Rekomendasi Sinyal</div>
+                    <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                      <div style={{ background:'#0f172a', border:'2px solid #1e293b', borderRadius:8, padding:'7px 9px', display:'flex', flexDirection:'column', gap:5, alignItems:'center', flexShrink:0 }}>
+                        {['red','yellow','green'].map(k => <div key={k} style={{ width:11, height:11, borderRadius:'50%', background: k===rec.light ? {red:'#ef4444',yellow:'#f59e0b',green:'#22c55e'}[k] : '#1e293b', boxShadow: k===rec.light ? `0 0 7px ${{red:'#ef4444',yellow:'#f59e0b',green:'#22c55e'}[k]}` : 'none', border:`1.5px solid ${k===rec.light?{red:'#ef4444',yellow:'#f59e0b',green:'#22c55e'}[k]:'#374151'}` }} />)}
+                      </div>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:12, fontWeight:800, color:rec.dot }}>{rec.label}</div>
+                        <div style={{ fontSize:10, color:'#64748b', marginTop:2 }}>{rec.note}</div>
+                        <div style={{ display:'flex', gap:10, marginTop:6 }}>
+                          <span style={{ fontSize:10, color:'#22c55e', fontWeight:700 }}>🟢 Hijau {rec.green}s</span>
+                          <span style={{ fontSize:10, color:'#ef4444', fontWeight:700 }}>🔴 Merah {rec.red}s</span>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 );
+              })() : (
+                <div style={{ ...S.card, display:'flex', alignItems:'center', gap:10 }}>
+                  <span style={{ fontSize:20 }}>🛣️</span>
+                  <div>
+                    <div style={{ fontSize:12, fontWeight:700, color:'#64748b' }}>Jalan Tol</div>
+                    <div style={{ fontSize:10, color:'#475569', marginTop:2 }}>Tidak ada lampu merah di ruas ini</div>
+                  </div>
+                </div>
+              )}
 
-                const vehicles   = d.cctv?.vehicles ?? 0;
-                const statusDot  = vehicles > 30 ? "🔴" : vehicles > 15 ? "🟡" : "🟢";
-                const statusTxt  = vehicles > 30 ? "PADAT" : vehicles > 15 ? "RAMAI" : "LANCAR";
-                const statusCls  = vehicles > 30 ? "text-red-400" : vehicles > 15 ? "text-yellow-400" : "text-emerald-400";
-                const usual      = d.nowVsUsual ? Math.round(d.nowVsUsual.usual) : "—";
-                const diffPct    = d.nowVsUsual?.diff_percent ?? null;
-
+              {/* TomTom Flow */}
+              {tomtomFlow?.currentSpeed > 0 && (() => {
+                const pct = Math.round((tomtomFlow.currentSpeed / Math.max(tomtomFlow.freeFlowSpeed, 1)) * 100);
+                const sc  = tomtomFlow.currentSpeed < 20 ? '#f43f5e' : tomtomFlow.currentSpeed < 40 ? '#f59e0b' : '#10b981';
+                const bc  = pct < 40 ? '#f43f5e' : pct < 70 ? '#f59e0b' : '#10b981';
                 return (
-                  <div key={locId} className={`rounded-xl border p-3 ${bgClass}`}>
-                    {/* Nama lokasi */}
-                    <p className={`text-xs font-bold leading-tight mb-2 ${nameColor}`}>
-                      {d.cctv?.name ?? `Lokasi ${locId}`}
-                    </p>
-
-                    {/* Kendaraan sekarang */}
-                    <div className="flex items-end gap-1 mb-1">
-                      <span className="text-2xl font-bold">{vehicles}</span>
-                      <span className="text-xs text-slate-400 mb-0.5">kend.</span>
-                    </div>
-
-                    {/* Status badge */}
-                    <p className={`text-[10px] font-bold mb-1 ${statusCls}`}>
-                      {statusDot} {statusTxt}
-                    </p>
-
-                    {/* Biasanya */}
-                    <p className="text-[10px] text-slate-400">
-                      Biasanya: <span className="font-semibold text-slate-200">{usual}</span>
-                      {diffPct !== null && (
-                        <span className={diffPct > 0 ? " text-red-400" : " text-emerald-400"}>
-                          {" "}{diffPct > 0 ? "▲" : "▼"}{Math.abs(diffPct)}%
-                        </span>
-                      )}
-                    </p>
-
-                    {/* Mini chart */}
-                    {d.history?.length > 0 && (
-                      <div className="mt-2">
-                        <ResponsiveContainer width="100%" height={70}>
-                          <AreaChart data={d.history} margin={{ top:2, right:0, left:0, bottom:0 }}>
-                            <Area
-                              type="monotone"
-                              dataKey="avg_vehicle"
-                              stroke={colColor}
-                              fill={colColor}
-                              fillOpacity={0.2}
-                              strokeWidth={2}
-                              dot={false}
-                            />
-                            <Tooltip
-                              contentStyle={{ background:"#0f172a", border:"none", fontSize:"10px" }}
-                              labelStyle={{ display:"none" }}
-                              formatter={(v) => [`${v} kend.`]}
-                            />
-                          </AreaChart>
-                        </ResponsiveContainer>
-                        <p className="text-[9px] text-slate-500 text-center mt-0.5">1 Jam Terakhir</p>
+                  <div style={S.card}>
+                    <div style={S.label}>🛰️ Kecepatan Jalan (TomTom)</div>
+                    <div style={{ display:'flex', gap:12, marginBottom:8 }}>
+                      <div>
+                        <div style={{ fontSize:9, color:'#475569' }}>Sekarang</div>
+                        <div style={{ fontSize:24, fontWeight:900, color:sc, fontVariantNumeric:'tabular-nums' }}>{tomtomFlow.currentSpeed}<span style={{ fontSize:10, color:'#64748b', fontWeight:400 }}>km/j</span></div>
                       </div>
-                    )}
+                      <div style={{ width:1, background:'rgba(255,255,255,.07)' }} />
+                      <div>
+                        <div style={{ fontSize:9, color:'#475569' }}>Bebas Hambatan</div>
+                        <div style={{ fontSize:24, fontWeight:900, color:'#94a3b8', fontVariantNumeric:'tabular-nums' }}>{tomtomFlow.freeFlowSpeed}<span style={{ fontSize:10, color:'#64748b', fontWeight:400 }}>km/j</span></div>
+                      </div>
+                    </div>
+                    <div style={{ display:'flex', justifyContent:'space-between', fontSize:9, color:'#475569', marginBottom:4 }}>
+                      <span>Efisiensi Lajur</span><span>{pct}%</span>
+                    </div>
+                    <div style={{ height:4, background:'rgba(255,255,255,.08)', borderRadius:99, overflow:'hidden' }}>
+                      <div style={{ width:`${Math.min(100,pct)}%`, height:'100%', background:bc, borderRadius:99, transition:'width .5s' }} />
+                    </div>
+                  </div>
+                );
+              })()}
 
-                    {/* Klik untuk detail */}
-                    <button
-                      onClick={() => {
-                        setSelected(d.cctv);
-                        setCompareMode(null);
-                        setHighlighted([]);
-                      }}
-                      className="mt-2 w-full text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded-lg transition-colors"
-                    >
-                      Detail →
-                    </button>
+              {/* Mini chart */}
+              {history.length > 0 && (
+                <div style={S.card}>
+                  <div style={S.label}>Tren 1 Jam Terakhir</div>
+                  <ResponsiveContainer width="100%" height={80}>
+                    <AreaChart data={history} margin={{ top:2, right:0, left:-28, bottom:0 }}>
+                      <CartesianGrid stroke="rgba(255,255,255,.05)" vertical={false} />
+                      <XAxis dataKey="label" tick={{ fontSize:8, fill:'#475569' }} stroke="transparent" />
+                      <YAxis tick={{ fontSize:8, fill:'#475569' }} stroke="transparent" />
+                      <Tooltip contentStyle={{ background:'#0b1e36', border:'none', fontSize:10, borderRadius:6 }} labelStyle={{ color:'#64748b' }} formatter={v => [`${v} kend.`]} />
+                      <Area type="natural" dataKey="avg_vehicle" stroke="#38bdf8" fill="rgba(56,189,248,.15)" strokeWidth={2} dot={false} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              {/* Next-hour prediction (routing) */}
+              {nextHourPrediction && (
+                <div style={{ ...S.card, borderColor:`${predictionStyle(nextHourPrediction.status).color.replace('text-','').includes('red')?'#f43f5e':predictionStyle(nextHourPrediction.status).color.includes('yellow')?'#f59e0b':'#10b981'}40` }}>
+                  <div style={S.label}>Prediksi 1 Jam ke Depan</div>
+                  <div style={{ fontSize:13, fontWeight:800, color: nextHourPrediction.status === 'POTENTIAL_JAM' ? '#f43f5e' : nextHourPrediction.status === 'UNSTABLE' ? '#f59e0b' : '#10b981' }}>
+                    {predictionStyle(nextHourPrediction.status).icon} {nextHourPrediction.label}
+                  </div>
+                  <div style={{ fontSize:10, color:'#64748b', marginTop:4 }}>
+                    {nextHourPrediction.now} → {nextHourPrediction.predicted} kend.{' '}
+                    <span style={{ color: nextHourPrediction.change_percent < 0 ? '#10b981' : '#f43f5e', fontWeight:700 }}>
+                      {nextHourPrediction.change_percent > 0 ? '+' : ''}{nextHourPrediction.change_percent}%
+                    </span>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ——— ROUTING INFO ——— */}
+          {!selected && isRoutingActive && eta && (
+            <>
+              <div style={{ ...S.card, borderColor:'rgba(56,189,248,.2)' }}>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+                  <div>
+                    <div style={S.label}>ETA</div>
+                    <div style={{ fontSize:28, fontWeight:900, color:'#38bdf8', fontVariantNumeric:'tabular-nums' }}>{eta.time}<span style={{ fontSize:11, color:'#64748b', fontWeight:400 }}> mnt</span></div>
+                  </div>
+                  <div>
+                    <div style={S.label}>Jarak</div>
+                    <div style={{ fontSize:28, fontWeight:900, color:'#38bdf8', fontVariantNumeric:'tabular-nums' }}>{eta.distance}<span style={{ fontSize:11, color:'#64748b', fontWeight:400 }}> km</span></div>
+                  </div>
+                </div>
+                {/* Route condition */}
+                <div style={{ marginTop:10, display:'flex', alignItems:'center', gap:8 }}>
+                  <span style={{ fontSize:9, fontWeight:700, letterSpacing:.6, color: routeDecisionColor.includes('emerald')?'#10b981':routeDecisionColor.includes('red')?'#f43f5e':'#f59e0b' }}>
+                    ● {routeDecisionLabel.toUpperCase()}
+                  </span>
+                  <span style={{ fontSize:9, color:'#64748b' }}>{routeDecisionNote}</span>
+                </div>
+              </div>
+
+              {/* Turn-by-turn */}
+              {routeSteps.length > 0 && (
+                <div style={S.card}>
+                  <div style={S.label}>Petunjuk Arah</div>
+                  <div style={{ maxHeight:180, overflowY:'auto' }}>
+                    {routeSteps.map((step, i) => (
+                      <div key={i} style={{ display:'flex', alignItems:'flex-start', gap:8, padding:'5px 0', borderBottom: i<routeSteps.length-1?'1px solid rgba(255,255,255,.05)':'none' }}>
+                        <span style={{ fontSize:14, flexShrink:0, lineHeight:1.3 }}>{step.icon}</span>
+                        <div style={{ flex:1 }}>
+                          <div style={{ fontSize:11, fontWeight:600 }}>{step.instruction}</div>
+                          {step.name && <div style={{ fontSize:9, color:'#64748b', marginTop:1 }}>{step.name}</div>}
+                        </div>
+                        {step.distance && <span style={{ fontSize:10, color:'#475569', flexShrink:0, fontVariantNumeric:'tabular-nums' }}>{step.distance}</span>}
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={() => { setRouteSegments([]); setEta(null); setStartPoint(null); setEndPoint(null); setRouteNames(null); setRouteSteps([]); setWaypointETAs([]); }}
+                    style={{ marginTop:8, width:'100%', background:'rgba(244,63,94,.1)', border:'1px solid rgba(244,63,94,.25)', borderRadius:7, padding:'6px 0', fontSize:11, color:'#f43f5e', fontWeight:700, cursor:'pointer' }}>
+                    ✕ Batalkan Rute
+                  </button>
+                </div>
+              )}
+
+              {/* 1-hour prediction for route */}
+              {nextHourPrediction && (
+                <div style={S.card}>
+                  <div style={S.label}>Kondisi 1 Jam Lagi</div>
+                  <div style={{ fontSize:12, fontWeight:800, color: nextHourPrediction.status === 'POTENTIAL_JAM' ? '#f43f5e' : nextHourPrediction.status === 'UNSTABLE' ? '#f59e0b' : '#10b981' }}>
+                    {predictionStyle(nextHourPrediction.status).icon} {nextHourPrediction.label}
+                  </div>
+                  <div style={{ fontSize:10, color:'#64748b', marginTop:4 }}>
+                    {nextHourPrediction.now} → {nextHourPrediction.predicted} kend.{' '}
+                    <span style={{ color: nextHourPrediction.change_percent < 0 ? '#10b981' : '#f43f5e', fontWeight:700 }}>
+                      {nextHourPrediction.change_percent > 0 ? '+' : ''}{nextHourPrediction.change_percent}%
+                    </span>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ——— COMPARE MODE ——— */}
+          {compareMode && !selected && !isRoutingActive && (
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+              {compareMode.ids.map((locId, colIdx) => {
+                const d = compareData[locId];
+                const accentColor = colIdx === 0 ? '#38bdf8' : '#a78bfa';
+                if (!d) return (
+                  <div key={locId} style={{ ...S.card, display:'flex', alignItems:'center', justifyContent:'center', minHeight:80 }}>
+                    <span style={{ color:'#475569', fontSize:11 }}>Memuat...</span>
+                  </div>
+                );
+                const v = d.cctv?.vehicles ?? 0;
+                const vc = v > 30 ? '#f43f5e' : v > 15 ? '#f59e0b' : '#10b981';
+                const vl = v > 30 ? 'PADAT' : v > 15 ? 'RAMAI' : 'LANCAR';
+                return (
+                  <div key={locId} style={{ ...S.card, borderColor:`${accentColor}30`, marginBottom:0 }}>
+                    <div style={{ fontSize:10, fontWeight:700, color:accentColor, marginBottom:4, lineHeight:1.2 }}>{d.cctv?.name ?? `Lokasi ${locId}`}</div>
+                    <div style={{ fontSize:26, fontWeight:900, color:vc, fontVariantNumeric:'tabular-nums' }}>{v}</div>
+                    <div style={{ fontSize:9, fontWeight:700, color:vc, marginBottom:6 }}>{vl}</div>
+                    {d.history?.length > 0 && (
+                      <ResponsiveContainer width="100%" height={50}>
+                        <AreaChart data={d.history} margin={{ top:0, right:0, left:0, bottom:0 }}>
+                          <Area type="monotone" dataKey="avg_vehicle" stroke={accentColor} fill={accentColor} fillOpacity={.15} strokeWidth={1.5} dot={false} />
+                          <Tooltip contentStyle={{ display:'none' }} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    )}
+                    <button onClick={() => { setSelected(d.cctv); setCompareMode(null); setHighlighted([]); }} style={{ marginTop:6, width:'100%', background:'rgba(255,255,255,.06)', border:'none', borderRadius:6, padding:'4px 0', fontSize:10, color:'#94a3b8', cursor:'pointer', fontWeight:700 }}>Detail →</button>
                   </div>
                 );
               })}
-            </div>
-
-            {/* Kesimpulan singkat */}
-            {compareMode.ids.length === 2 && compareData[compareMode.ids[0]] && compareData[compareMode.ids[1]] && (() => {
-              const a = compareData[compareMode.ids[0]];
-              const b = compareData[compareMode.ids[1]];
-              const vA = a.cctv?.vehicles ?? 0;
-              const vB = b.cctv?.vehicles ?? 0;
-              const isTie = vA === vB;
-              const winner = vA < vB ? a.cctv?.name : b.cctv?.name;
-              return (
-                <div className="mt-3 p-3 bg-slate-900 rounded-xl border border-slate-800">
-                  <p className="text-xs text-slate-400">Kesimpulan AI</p>
-                  {isTie ? (
-                    <p className="text-sm font-bold text-blue-400 mt-0.5">
-                      Keduanya sama-sama {vA > 30 ? "padat" : vA > 15 ? "ramai" : "lancar"}
-                    </p>
-                  ) : (
-                    <p className="text-sm font-bold text-emerald-400 mt-0.5">
-                      {winner} lebih lancar saat ini
-                    </p>
-                  )}
-                  <p className="text-[10px] text-slate-400 mt-1">
-                    Selisih: {Math.abs(vA - vB)} kendaraan
-                  </p>
-                </div>
-              );
-            })()}
-          </div>
-        )}
-
-        {selected ? (
-          <>
-            <h2 className="text-2xl font-bold mb-1">{selected.name}</h2>
-            <p className="text-slate-400 mb-2">
-              <span>{selected.vehicles} kendaraan saat ini</span>
-            </p>
-
-            {nowVsUsual && (
-              <div className="grid grid-cols-2 gap-4 mb-4">
-                <div className="bg-slate-900 p-4 rounded-xl">
-                  <p className="text-xs text-slate-400">Sekarang</p>
-                  <p className="text-2xl font-bold">{nowVsUsual.now}</p>
-                </div>
-                <div className="bg-slate-900 p-4 rounded-xl">
-                  <p className="text-xs text-slate-400">Biasanya</p>
-                  <p className="text-2xl font-bold">{Math.round(nowVsUsual.usual)}</p>
-                </div>
-              </div>
-            )}
-            
-
-            <div className="mb-4 bg-slate-900 p-4 rounded-xl border border-slate-800">
-              <div className="flex items-center gap-2">
-                <AlertTriangle size={18} />
-                <p className={`font-bold ${decisionColor}`}>{decisionLabel}</p>
-              </div>
-              <p className="text-xs text-slate-400 mt-1">{decisionNote}</p>
-            </div>
-
-            {/* ── REKOMENDASI SINYAL ADAPTIF — hanya jika ada lampu merah ── */}
-            {selected.has_signal ? (() => {
-              const rec = getSignalRec(selected.vehicles);
-              return (
-                <div className={`mb-4 p-4 rounded-xl border ${rec.bg}`}>
-                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-3">
-                    🚦 Rekomendasi Sinyal Adaptif
-                  </p>
-                  <div className="flex items-center gap-4">
-                    <TrafficLight active={rec.light} />
-                    <div className="flex-1 min-w-0">
-                      <p className={`font-bold text-sm ${rec.color}`}>{rec.label}</p>
-                      <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">{rec.note}</p>
-                      <div className="flex gap-3 mt-2">
-                        <div className="text-center">
-                          <p className="text-[9px] text-slate-500 uppercase">Hijau</p>
-                          <p className="text-lg font-black text-emerald-400">{rec.green}<span className="text-xs font-normal text-slate-500">s</span></p>
-                        </div>
-                        <div className="w-px bg-slate-700" />
-                        <div className="text-center">
-                          <p className="text-[9px] text-slate-500 uppercase">Merah</p>
-                          <p className="text-lg font-black text-red-400">{rec.red}<span className="text-xs font-normal text-slate-500">s</span></p>
-                        </div>
-                        <div className="w-px bg-slate-700" />
-                        <div className="text-center">
-                          <p className="text-[9px] text-slate-500 uppercase">Prioritas</p>
-                          <p className={`text-sm font-black ${rec.color}`}>{rec.priority}</p>
-                        </div>
-                      </div>
+              {/* Conclusion */}
+              {compareMode.ids.length === 2 && compareData[compareMode.ids[0]] && compareData[compareMode.ids[1]] && (() => {
+                const a = compareData[compareMode.ids[0]];
+                const b = compareData[compareMode.ids[1]];
+                const vA = a.cctv?.vehicles ?? 0, vB = b.cctv?.vehicles ?? 0;
+                const isTie = vA === vB;
+                const winner = vA < vB ? a.cctv?.name : b.cctv?.name;
+                return (
+                  <div style={{ gridColumn:'1/-1', ...S.card, background:'rgba(56,189,248,.07)', borderColor:'rgba(56,189,248,.2)' }}>
+                    <div style={{ fontSize:9, color:'#64748b', marginBottom:3 }}>Kesimpulan AI</div>
+                    <div style={{ fontSize:12, fontWeight:800, color: isTie?'#38bdf8':'#10b981' }}>
+                      {isTie ? `Keduanya ${vA>30?'padat':vA>15?'ramai':'lancar'}` : `${winner} lebih lancar`}
                     </div>
+                    <div style={{ fontSize:10, color:'#64748b', marginTop:2 }}>Selisih: {Math.abs(vA-vB)} kendaraan</div>
                   </div>
-                </div>
-              );
-            })() : (
-              <div className="mb-4 p-4 rounded-xl border border-slate-800 bg-slate-900/50 flex items-center gap-3">
-                <span className="text-2xl">🛣️</span>
-                <div>
-                  <p className="text-sm font-bold text-slate-400">Jalan Tol</p>
-                  <p className="text-xs text-slate-500 mt-0.5">Tidak ada lampu merah — rekomendasi sinyal tidak berlaku di ruas tol.</p>
-                </div>
-              </div>
-            )}
+                );
+              })()}
+            </div>
+          )}
 
-            {/* ── TomTom Kecepatan Jalan ── */}
-            {tomtomFlow?.currentSpeed > 0 && (() => {
-              const pct = Math.round((tomtomFlow.currentSpeed / Math.max(tomtomFlow.freeFlowSpeed, 1)) * 100);
-              const speedColor = tomtomFlow.currentSpeed < 20 ? "text-red-400" : tomtomFlow.currentSpeed < 40 ? "text-yellow-400" : "text-emerald-400";
-              const barColor   = pct < 40 ? "bg-red-500" : pct < 70 ? "bg-yellow-500" : "bg-emerald-500";
-              return (
-                <div className="mb-4 bg-slate-900 p-4 rounded-xl border border-slate-800">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-3">
-                    🛰️ Kecepatan Jalan (TomTom)
-                  </p>
-                  <div className="grid grid-cols-2 gap-3">
+          {/* ——— PREDICTION TABLE ——— */}
+          {!selected && !isRoutingActive && !compareMode && predictionData && predictionMode !== 'now' && (
+            <div style={S.card}>
+              <div style={S.label}>Prediksi {predictionData.horizon} Menit</div>
+              <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                {predictionData.predictions?.map(p => (
+                  <div key={p.location_id} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'5px 0', borderBottom:'1px solid rgba(255,255,255,.04)' }}>
                     <div>
-                      <p className="text-[9px] text-slate-500 uppercase">Sekarang</p>
-                      <p className={`text-2xl font-black ${speedColor}`}>
-                        {tomtomFlow.currentSpeed}<span className="text-xs font-normal text-slate-500"> km/j</span>
-                      </p>
+                      <div style={{ fontSize:11, fontWeight:700 }}>{p.name}</div>
+                      <div style={{ fontSize:9, color:'#475569' }}>Saat ini: {p.current_vehicles}</div>
                     </div>
-                    <div>
-                      <p className="text-[9px] text-slate-500 uppercase">Bebas Hambatan</p>
-                      <p className="text-2xl font-black text-slate-300">
-                        {tomtomFlow.freeFlowSpeed}<span className="text-xs font-normal text-slate-500"> km/j</span>
-                      </p>
+                    <div style={{ textAlign:'right' }}>
+                      <div style={{ fontSize:16, fontWeight:900, color: p.status==='PADAT'?'#f43f5e':p.status==='RAMAI'?'#f59e0b':'#10b981', fontVariantNumeric:'tabular-nums' }}>{p.predicted_vehicles}</div>
+                      <div style={{ fontSize:9, fontWeight:700, color: p.status==='PADAT'?'#f43f5e':p.status==='RAMAI'?'#f59e0b':'#10b981' }}>{p.status}</div>
                     </div>
                   </div>
-                  <div className="mt-2">
-                    <div className="flex justify-between text-[9px] text-slate-500 mb-1">
-                      <span>Efisiensi Lajur</span>
-                      <span>{pct}%</span>
-                    </div>
-                    <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${Math.min(100, pct)}%` }} />
-                    </div>
-                  </div>
-                  <p className="text-[9px] text-slate-600 mt-2">Sumber: TomTom Traffic Flow API</p>
-                </div>
-              );
-            })()}
-
-            <div className="bg-slate-900 rounded-xl p-4">
-              <p className="text-xs text-slate-400 mb-2">
-                Traffic Stability & Volatility (1 Jam Terakhir)
-              </p>
-              <ResponsiveContainer width="100%" height={240}>
-                <AreaChart data={history}>
-                  <CartesianGrid stroke="#1e293b" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 10 }} stroke="#64748b" />
-                  <YAxis stroke="#64748b" />
-                  <Tooltip />
-                  <Area type="natural" dataKey="avg_vehicle" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} strokeWidth={3} />
-                  <Line type="monotone" dataKey="volatility" stroke="#ef4444" strokeWidth={2} dot={false} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-
-            <Link to="/admin" className="mt-6 block text-center bg-slate-800 py-3 rounded-xl font-bold">
-              Admin Dashboard
-            </Link>
-          </>
-        ) : isRoutingActive ? (
-          <>
-            <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
-              <Route size={20} /> Informasi Rute
-            </h2>
-
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div className="bg-slate-900 p-4 rounded-xl">
-                <p className="text-xs text-slate-400">ETA</p>
-                <p className="text-2xl font-bold">{eta?.time} menit</p>
-              </div>
-              <div className="bg-slate-900 p-4 rounded-xl">
-                <p className="text-xs text-slate-400">Jarak</p>
-                <p className="text-2xl font-bold">{eta?.distance} km</p>
+                ))}
               </div>
             </div>
+          )}
 
-            {/* ── Kondisi Rute: Sekarang → 1 Jam Lagi (unified) ── */}
-            <div className="mb-4 bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
-              <p className="text-[10px] text-slate-500 uppercase font-bold px-4 pt-3 pb-2">
-                Kondisi Rute
-              </p>
-              <div className="flex divide-x divide-slate-800">
-                {/* Sekarang */}
-                <div className="flex-1 px-4 pb-4">
-                  <p className="text-[9px] text-slate-500 uppercase mb-1">Sekarang</p>
-                  <p className={`font-bold text-sm ${routeDecisionColor}`}>{routeDecisionLabel}</p>
-                  <p className="text-[10px] text-slate-400 mt-1 leading-snug">{routeDecisionNote}</p>
-                </div>
-
-                {/* Arrow */}
-                <div className="flex items-center px-3 text-slate-600 text-lg select-none">→</div>
-
-                {/* 1 Jam Lagi */}
-                <div className="flex-1 px-4 pb-4">
-                  <p className="text-[9px] text-slate-500 uppercase mb-1">1 Jam Lagi</p>
-                  {nextHourPrediction ? (
-                    <>
-                      <p className={`font-bold text-sm ${predictionStyle(nextHourPrediction.status).color}`}>
-                        {predictionStyle(nextHourPrediction.status).icon} {nextHourPrediction.label}
-                      </p>
-                      <p className="text-[10px] text-slate-400 mt-1">
-                        {nextHourPrediction.now} → {nextHourPrediction.predicted} kend.{" "}
-                        <span className={nextHourPrediction.change_percent < 0 ? "text-emerald-400 font-bold" : "text-red-400 font-bold"}>
-                          {nextHourPrediction.change_percent > 0 ? "+" : ""}{nextHourPrediction.change_percent}%
-                        </span>
-                      </p>
-                    </>
-                  ) : (
-                    <p className="text-[10px] text-slate-500">Memuat...</p>
-                  )}
-                </div>
+          {/* ——— DEFAULT GUIDE ——— */}
+          {!selected && !isRoutingActive && !compareMode && (
+            <div style={{ ...S.card, textAlign:'center', padding:'24px 16px' }}>
+              <div style={{ fontSize:28, marginBottom:8, opacity:.5 }}>🗺️</div>
+              <div style={{ fontSize:13, fontWeight:700, color:'#64748b', marginBottom:4 }}>Cara Menggunakan</div>
+              <div style={{ fontSize:11, color:'#475569', lineHeight:1.6 }}>
+                <b style={{ color:'#94a3b8' }}>Klik kamera</b> untuk melihat kondisi lalu lintas & video live.<br/>
+                <b style={{ color:'#94a3b8' }}>Klik 2× peta</b> untuk menentukan titik awal & tujuan rute.<br/>
+                <b style={{ color:'#94a3b8' }}>AI Chat</b> untuk bertanya dengan bahasa natural.
               </div>
-
-              {/* Footer */}
-              {nextHourPrediction && (
-                <div className="px-4 py-2 border-t border-slate-800 flex justify-between items-center">
-                  <p className="text-[9px] text-slate-500 italic">{nextHourPrediction.note}</p>
-                  <span className="text-[9px] text-slate-600">Confidence: {nextHourPrediction.confidence}</span>
-                </div>
-              )}
             </div>
+          )}
 
-          </>
-        ) : (
-          <div className="h-full flex items-center justify-center text-slate-500 text-center">
-            Klik peta untuk routing<br />
-            atau klik CCTV untuk analisis lalu lintas
-          </div>
-        )}
+          {/* TomTom incidents info */}
+          {tomtomIncidents.length > 0 && (
+            <div style={{ ...S.card, display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ fontSize:14 }}>⚠️</span>
+              <span style={{ fontSize:10, color:'#f59e0b', fontWeight:700 }}>{tomtomIncidents.length} insiden aktif dari TomTom</span>
+            </div>
+          )}
+        </div>
+
+        {/* ── PANEL FOOTER: link to operator ── */}
+        <div style={S.panelFtr}>
+          <a href="/admin" style={{ display:'block', textAlign:'center', background:'rgba(255,255,255,.05)', border:'1px solid rgba(255,255,255,.08)', borderRadius:8, padding:'8px 0', fontSize:11, color:'#64748b', fontWeight:600, textDecoration:'none' }}>
+            ⚙ Panel Operator Dishub
+          </a>
+        </div>
+      </aside>
+
+      {/* ══ MOBILE TOGGLE ══════════════════════════════════════════ */}
+      <button
+        onClick={() => setShowPanel(p => !p)}
+        style={{ position:'absolute', bottom:20, left:'50%', transform:'translateX(-50%)', zIndex:1500, display:'flex', alignItems:'center', gap:6, background:'rgba(6,17,40,0.92)', border:'1px solid rgba(56,189,248,.2)', borderRadius:99, padding:'10px 20px', color:'#f0f9ff', fontSize:12, fontWeight:700, cursor:'pointer', boxShadow:'0 4px 24px rgba(0,0,0,.5)' }}
+        className="md:hidden"
+      >
+        {showPanel ? '✕ Tutup Panel' : '📊 Lihat Info'}
+      </button>
+
+      {/* Map legend (bottom right) */}
+      <div style={{ position:'absolute', bottom:24, right:12, zIndex:1000, background:'rgba(6,17,40,0.9)', border:'1px solid rgba(56,189,248,.1)', borderRadius:10, padding:'8px 12px', fontSize:9, color:'#64748b', lineHeight:1.9 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:6 }}><span style={{ width:8, height:8, borderRadius:'50%', background:'#22c55e', display:'inline-block' }} />Kamera Kota</div>
+        <div style={{ display:'flex', alignItems:'center', gap:6 }}><span style={{ width:8, height:8, borderRadius:2, background:'#f59e0b', display:'inline-block' }} />Kamera Tol</div>
+        {tomtomIncidents.length > 0 && <div style={{ display:'flex', alignItems:'center', gap:6 }}><span style={{ fontSize:10 }}>⚠️</span>Insiden TomTom</div>}
       </div>
+
+      <style>{`
+        @keyframes bounce-dot { 0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)} }
+        .cctv-popup .leaflet-popup-content-wrapper { padding:0; background:transparent; box-shadow:none; border:none; }
+        .cctv-popup .leaflet-popup-content { margin:0; }
+        .cctv-popup .leaflet-popup-tip-container { display:none; }
+        @media (min-width:768px) { button.md\\:hidden { display:none !important; } aside { display:flex !important; } }
+      `}</style>
     </div>
     {/* Chat UI */}
     <ChatPopup
@@ -1592,6 +1412,3 @@ export default function App() {
     </>
   );
 }
-
-/* Chat UI injected at root */
-// Render chat button and popup via portal-like placement inside App's JSX tree
