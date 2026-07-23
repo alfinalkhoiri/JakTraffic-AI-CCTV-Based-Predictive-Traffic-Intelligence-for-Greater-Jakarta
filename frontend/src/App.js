@@ -458,8 +458,15 @@ export default function App() {
   const [mapFlyTo,    setMapFlyTo]      = useState(null); // { lat, lng } — auto-zoom
   const [compareMode, setCompareMode]   = useState(null); // { ids:[1,5] } — sidebar compare
   const [compareData, setCompareData]   = useState({});
-  const [showPanel, setShowPanel]        = useState(false);   // { [id]: { cctv, history, nowVsUsual } }
+  const [showPanel, setShowPanel]        = useState(false);
   const [voiceEnabled, setVoiceEnabled]  = useState(false);
+
+  // Geocoding search
+  const [searchFrom, setSearchFrom]       = useState('');
+  const [searchTo,   setSearchTo]         = useState('');
+  const [searchHits, setSearchHits]       = useState([]);
+  const [searchTarget, setSearchTarget]   = useState(null); // 'from' | 'to'
+  const searchTimer = useRef(null);
 
   /* ================= VOICE (Web Speech API) ================= */
   const voiceEnabledRef = useRef(false);
@@ -521,6 +528,65 @@ export default function App() {
         : doSpeak();
     });
   }, [routeSteps]);
+
+  /* ================= GEOCODING (Nominatim) ================= */
+  const geocodeSearch = useCallback(async (query, target) => {
+    if (!query || query.length < 2) { setSearchHits([]); return; }
+    try {
+      const res = await axios.get('https://nominatim.openstreetmap.org/search', {
+        params: {
+          q: query,
+          format: 'json',
+          limit: 5,
+          viewbox: '106.3,-5.85,107.35,-6.65',
+          bounded: 0,
+          countrycodes: 'id',
+          addressdetails: 1,
+          'accept-language': 'id',
+        },
+        headers: { 'User-Agent': 'JakTrafficAI/1.0' },
+        timeout: 5000,
+      });
+      setSearchHits(res.data);
+      setSearchTarget(target);
+    } catch { setSearchHits([]); }
+  }, []);
+
+  const handleSearchInput = useCallback((value, target) => {
+    if (target === 'from') setSearchFrom(value);
+    else setSearchTo(value);
+    setSearchTarget(target);
+    clearTimeout(searchTimer.current);
+    if (!value.trim()) { setSearchHits([]); return; }
+    searchTimer.current = setTimeout(() => geocodeSearch(value, target), 400);
+  }, [geocodeSearch]);
+
+  const selectGeoResult = useCallback((result) => {
+    const latlng = { lat: parseFloat(result.lat), lng: parseFloat(result.lon) };
+    const shortName = result.display_name.split(',').slice(0, 2).join(',').trim();
+    if (searchTarget === 'from') {
+      setStartPoint(latlng);
+      setSearchFrom(shortName);
+      setRouteNames(prev => ({ from: shortName, to: prev?.to || '' }));
+    } else {
+      setEndPoint(latlng);
+      setSearchTo(shortName);
+      setRouteNames(prev => ({ from: prev?.from || '', to: shortName }));
+    }
+    setSearchHits([]);
+    setMapFlyTo({ ...latlng, zoom: 15 });
+    setTimeout(() => setMapFlyTo(null), 3500);
+  }, [searchTarget]);
+
+  // Sync search inputs saat routeNames diset oleh LLM
+  useEffect(() => {
+    if (routeNames?.from) setSearchFrom(routeNames.from);
+    if (routeNames?.to)   setSearchTo(routeNames.to);
+  }, [routeNames]);
+
+  // Hapus search input saat point dihapus (reset rute)
+  useEffect(() => { if (!startPoint) setSearchFrom(''); }, [startPoint]);
+  useEffect(() => { if (!endPoint)   setSearchTo('');   }, [endPoint]);
 
   /* ================= LOAD CCTV ================= */
   useEffect(() => {
@@ -1156,6 +1222,77 @@ export default function App() {
         {/* ── PANEL BODY ── */}
         <div style={S.panelBody}>
 
+          {/* ——— SEARCH LOKASI ——— */}
+          {(() => {
+            const inputStyle = {
+              width:'100%', background:'rgba(255,255,255,.07)', border:'1px solid rgba(255,255,255,.1)',
+              borderRadius:7, padding:'8px 8px 8px 28px', color:'#f0f9ff', fontSize:11,
+              outline:'none', boxSizing:'border-box', transition:'border .15s',
+            };
+            const dropStyle = {
+              position:'absolute', top:'calc(100% + 3px)', left:0, right:0, zIndex:9999,
+              background:'#0b1929', border:'1px solid rgba(56,189,248,.25)', borderRadius:8,
+              overflow:'hidden', boxShadow:'0 8px 24px rgba(0,0,0,.5)',
+            };
+            const SearchBox = ({ value, target, icon, placeholder }) => (
+              <div style={{ position:'relative' }}>
+                <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, lineHeight:1 }}>{icon}</span>
+                <input
+                  value={value}
+                  onChange={e => handleSearchInput(e.target.value, target)}
+                  onFocus={() => { setSearchTarget(target); if (value.length >= 2) geocodeSearch(value, target); }}
+                  onBlur={() => setTimeout(() => setSearchHits([]), 180)}
+                  placeholder={placeholder}
+                  style={{ ...inputStyle, borderColor: searchTarget === target && searchHits.length > 0 ? 'rgba(56,189,248,.4)' : 'rgba(255,255,255,.1)' }}
+                />
+                {searchTarget === target && searchHits.length > 0 && (
+                  <div style={dropStyle}>
+                    {searchHits.map((r, i) => (
+                      <div
+                        key={i}
+                        onMouseDown={() => selectGeoResult(r)}
+                        style={{ padding:'9px 12px', cursor:'pointer', borderBottom: i < searchHits.length-1 ? '1px solid rgba(255,255,255,.05)' : 'none', transition:'background .1s' }}
+                        onMouseEnter={e => e.currentTarget.style.background='rgba(56,189,248,.08)'}
+                        onMouseLeave={e => e.currentTarget.style.background='transparent'}
+                      >
+                        <div style={{ fontSize:11, fontWeight:600, color:'#e2e8f0', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                          {r.display_name.split(',')[0]}
+                        </div>
+                        <div style={{ fontSize:9, color:'#64748b', marginTop:2, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                          {r.display_name.split(',').slice(1, 3).join(',')}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+            return (
+              <div style={{ ...S.card, padding:'10px 12px' }}>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+                  <div style={S.label}>Navigasi</div>
+                  {(startPoint || endPoint) && (
+                    <button
+                      onClick={() => { setStartPoint(null); setEndPoint(null); setRouteSegments([]); setEta(null); setRouteNames(null); setRouteSteps([]); setWaypointETAs([]); setSearchFrom(''); setSearchTo(''); }}
+                      style={{ fontSize:9, color:'#f43f5e', background:'rgba(244,63,94,.1)', border:'1px solid rgba(244,63,94,.2)', borderRadius:5, padding:'2px 7px', cursor:'pointer', fontWeight:700 }}
+                    >
+                      ✕ Reset
+                    </button>
+                  )}
+                </div>
+                <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                  <SearchBox value={searchFrom} target="from" icon="🟢" placeholder="Dari mana?" />
+                  <SearchBox value={searchTo}   target="to"   icon="🔴" placeholder="Ke mana?" />
+                </div>
+                {!startPoint && !endPoint && (
+                  <div style={{ fontSize:9, color:'#475569', marginTop:7, textAlign:'center' }}>
+                    Ketik nama jalan / tempat, atau klik langsung di peta
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           {/* ——— MODE WAKTU ——— */}
           <div style={S.card}>
             <div style={S.label}>Mode Tampilan</div>
@@ -1367,7 +1504,7 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  <button onClick={() => { setRouteSegments([]); setEta(null); setStartPoint(null); setEndPoint(null); setRouteNames(null); setRouteSteps([]); setWaypointETAs([]); }}
+                  <button onClick={() => { setRouteSegments([]); setEta(null); setStartPoint(null); setEndPoint(null); setRouteNames(null); setRouteSteps([]); setWaypointETAs([]); setSearchFrom(''); setSearchTo(''); }}
                     style={{ marginTop:8, width:'100%', background:'rgba(244,63,94,.1)', border:'1px solid rgba(244,63,94,.25)', borderRadius:7, padding:'6px 0', fontSize:11, color:'#f43f5e', fontWeight:700, cursor:'pointer' }}>
                     ✕ Batalkan Rute
                   </button>
