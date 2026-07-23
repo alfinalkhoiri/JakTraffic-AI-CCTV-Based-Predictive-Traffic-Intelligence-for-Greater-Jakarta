@@ -16,6 +16,7 @@ Peta full-screen dengan panel info mengambang. Dirancang agar mudah digunakan sa
 - Klik marker CCTV: status, kecepatan TomTom, grafik tren, rekomendasi sinyal
 - Klik 2× peta: buat rute A→B dengan petunjuk arah Bahasa Indonesia
 - Panduan suara (Web Speech API): auto-announce rute & kondisi CCTV
+- Pencarian lokasi geocoding (Nominatim): ketik nama tempat untuk titik awal/tujuan
 
 ### Tampilan Operator Dishub
 Dashboard command-center dengan sidebar tetap. Fokus pada monitoring dan pengelolaan.
@@ -26,6 +27,7 @@ Dashboard command-center dengan sidebar tetap. Fokus pada monitoring dan pengelo
 - **Sinyal** — tabel rekomendasi lampu merah/hijau seluruh persimpangan
 - **AI Deteksi** — upload YOLO, simulasi kendaraan, info model Transformer
 - **Manajemen** — CRUD kamera CCTV
+- Login terproteksi password (akses terbatas operator Dishub)
 
 ---
 
@@ -37,21 +39,43 @@ Dashboard command-center dengan sidebar tetap. Fokus pada monitoring dan pengelo
 - Status warna: HIJAU / KUNING / MERAH berdasarkan jumlah kendaraan terdeteksi
 - Overlay koridor tol: KG-PG, BCKM, JORR, Tol Dalam Kota, Tol Bekasi
 - Insiden TomTom langsung di peta (kecelakaan, kemacetan, penutupan jalan)
+- **Overlay zona rawan banjir** — 10 zona BPBD DKI Jakarta, 3 level risiko
 
 ### Routing Cerdas
 - Routing via OSRM (open source, tanpa API key)
+- **Rute alternatif** — hingga 3 pilihan rute dengan ETA & kondisi masing-masing
 - Polyline berwarna per segmen sesuai kepadatan zona CCTV terdekat
 - ETA real-time dengan koreksi kepadatan (1× / 1.25× / 1.5×)
 - Turn-by-turn navigation dengan petunjuk arah Bahasa Indonesia
 - Auto fit-bounds: peta otomatis zoom ke seluruh rute saat rute terbentuk
+- **Estimasi tarif tol** — deteksi koridor tol yang dilintasi, hitung biaya Rp per koridor
 - Prediksi kondisi 1 jam ke depan di sepanjang rute
 
 ### Panduan Suara
 - Toggle 🔊/🔇 di navbar
-- Auto-announce saat rute selesai: nama asal→tujuan + jarak + ETA + langkah pertama
+- Auto-announce saat rute selesai: nama asal→tujuan + jarak + ETA + langkah pertama + jumlah rute alternatif
 - Auto-announce saat klik kamera: nama lokasi + kondisi + jumlah kendaraan
 - Tombol "Baca" untuk membacakan semua petunjuk arah berurutan
 - Web Speech API bawaan browser, bahasa id-ID, tanpa library tambahan
+
+### AI Chatbot (SumoPod GPT-5 Nano)
+- Natural language Bahasa Indonesia
+- Context-aware: tahu kondisi 100 kamera + prediksi Transformer saat ini
+- Kontrol peta: zoom lokasi, set rute, highlight, bandingkan 2 titik
+- Streaming response real-time (Server-Sent Events)
+- **Voice input** (STT mic 🎤) + **voice reply** (TTS 🔊) bawaan browser
+- Mode edit tersembunyi dari user — hanya terlihat di panel /admin
+
+### Notifikasi Browser
+- Toggle 🔔 di navbar — meminta izin notifikasi browser
+- Push notification otomatis saat kondisi rute berubah (LANCAR → PADAT dst.)
+- Notifikasi insiden TomTom jika ada kecelakaan/kemacetan dalam radius 800m dari rute
+
+### WebSocket Real-Time
+- Koneksi persisten browser ↔ server via Socket.IO
+- Server push data kamera langsung ke semua client setelah setiap mining job (tiap ~2 menit)
+- Status dot hijau/kuning di navbar menandakan koneksi WebSocket aktif atau fallback polling
+- HTTP polling dipertahankan sebagai fallback (interval 90 detik)
 
 ### Rekomendasi Sinyal Adaptif
 - Durasi optimal fase hijau & merah berdasarkan kepadatan
@@ -68,12 +92,6 @@ Dashboard command-center dengan sidebar tetap. Fokus pada monitoring dan pengelo
 - Upload gambar/video → deteksi + anotasi → update kamera di peta
 - Auto-aktif jika `stream_url` kamera bisa diakses dari VPS
 - Mode simulasi realistis berbasis pola jam WIB saat stream tidak tersedia
-
-### AI Chatbot (SumoPod GPT-5 Nano)
-- Natural language Bahasa Indonesia
-- Context-aware: tahu kondisi 100 kamera + prediksi Transformer saat ini
-- Kontrol peta: zoom lokasi, set rute, highlight, bandingkan 2 titik
-- Streaming response real-time (Server-Sent Events)
 
 ### Prediksi Lalu Lintas (Transformer)
 - Arsitektur Transformer Encoder kustom (PyTorch)
@@ -92,16 +110,18 @@ Dashboard command-center dengan sidebar tetap. Fokus pada monitoring dan pengelo
 
 | Layer | Teknologi |
 |---|---|
-| Web Frontend | React.js, Leaflet, Recharts, Axios |
+| Web Frontend | React.js, Leaflet, Recharts, Axios, Socket.IO Client |
 | Mobile | Flutter (Android & iOS) |
-| Backend | Python 3, Flask, APScheduler |
+| Backend | Python 3, Flask, Flask-SocketIO, APScheduler |
 | AI / CV | YOLO 11n (Ultralytics), OpenCV |
 | ML | PyTorch Transformer (time-series predictor) |
 | LLM | SumoPod GPT-5 Nano (OpenAI-compatible API) |
 | Database | PostgreSQL |
 | Routing | OSRM (open source) |
+| Geocoding | Nominatim / OpenStreetMap |
 | Traffic Data | TomTom Traffic Flow + Incidents API |
-| Voice | Web Speech API (browser native) |
+| Voice | Web Speech API (browser native, STT + TTS) |
+| Real-time | WebSocket (Flask-SocketIO + Nginx upgrade proxy) |
 | Deployment | Nginx + PM2, VPS Ubuntu |
 
 ---
@@ -110,12 +130,13 @@ Dashboard command-center dengan sidebar tetap. Fokus pada monitoring dan pengelo
 
 ```
 Browser / Mobile App
-  ├── Peta Leaflet (React)          ← polling /api/cctv_status tiap 30 detik
+  ├── Peta Leaflet (React)          ← WebSocket push tiap ~2 menit + polling fallback 90s
   ├── AI Chatbot (SSE streaming)    ← /api/chat-stream
-  └── Admin Dashboard               ← CRUD, YOLO upload, signal overview
+  └── Admin Dashboard               ← CRUD, YOLO upload, signal overview (auth required)
 
 Flask Backend (:5000)
-  ├── APScheduler (tiap ~2 menit)   → YOLO / simulasi → update DB
+  ├── APScheduler (tiap ~2 menit)   → YOLO / simulasi → update DB → emit WebSocket
+  ├── Flask-SocketIO                → push traffic_update ke semua client
   ├── /api/cctv_status              → 100 kamera + has_signal + vehicles
   ├── /api/signal-recommendation    → rekomendasi sinyal adaptif
   ├── /api/predict-traffic          → Transformer 15/30 menit
@@ -129,6 +150,11 @@ PostgreSQL
   ├── current_traffic               → status kendaraan terkini per kamera
   ├── traffic_logs                  → historis setiap menit
   └── cctv_locations                → metadata kamera (lat, lng, road_type, stream_url)
+
+Nginx
+  ├── /                             → React build (static)
+  ├── /api/                         → proxy ke Flask :5000
+  └── /socket.io/                   → WebSocket proxy (Upgrade: websocket)
 ```
 
 ---
@@ -168,7 +194,7 @@ npm install
 npm start
 ```
 
-Akses di `http://localhost:3000` (user) dan `http://localhost:3000/admin` (operator)
+Akses di `http://localhost:3000` (user) dan `http://localhost:3000/admin-login` (operator)
 
 ### Mobile App
 
@@ -204,6 +230,9 @@ HOST=0.0.0.0
 PORT=3000
 BROWSER=none
 REACT_APP_CCTV_PROXY=https://your-worker.workers.dev
+
+# Opsional — override password default panel operator
+REACT_APP_ADMIN_PASS=your_admin_password_here
 ```
 
 > `REACT_APP_CCTV_PROXY` — opsional, untuk proxy stream HLS via Cloudflare Worker guna bypass CORS/geo-block.
@@ -228,6 +257,7 @@ REACT_APP_CCTV_PROXY=https://your-worker.workers.dev
 | POST | `/api/chat` | AI chatbot (non-streaming) |
 | POST | `/api/chat-stream` | AI chatbot (SSE streaming) |
 | GET | `/api/model-info` | Info Transformer model |
+| WS | `/socket.io/` | WebSocket — push `traffic_update` tiap ~2 menit |
 
 ---
 
@@ -235,7 +265,7 @@ REACT_APP_CCTV_PROXY=https://your-worker.workers.dev
 
 ```
 ├── backend/
-│   ├── app.py                  # Flask app + APScheduler + semua endpoints
+│   ├── app.py                  # Flask app + SocketIO + APScheduler + semua endpoints
 │   ├── core/
 │   │   ├── detector.py         # YOLO 11 VideoDetector
 │   │   ├── predictor.py        # Transformer traffic predictor
@@ -248,12 +278,13 @@ REACT_APP_CCTV_PROXY=https://your-worker.workers.dev
 │
 ├── frontend/
 │   ├── src/
-│   │   ├── App.js              # Tampilan User — peta + routing + suara + chatbot
+│   │   ├── App.js              # Tampilan User — peta + routing + suara + chatbot + WebSocket
 │   │   ├── pages/
-│   │   │   └── Admin.js        # Tampilan Operator Dishub — 5-tab dashboard
+│   │   │   ├── Admin.js        # Tampilan Operator Dishub — 5-tab dashboard
+│   │   │   └── AdminLogin.js   # Halaman login panel operator
 │   │   ├── components/
 │   │   │   ├── MapPopup.jsx    # Popup kamera di peta
-│   │   │   ├── ChatPopup.jsx   # AI chatbot UI
+│   │   │   ├── ChatPopup.jsx   # AI chatbot UI (voice STT/TTS)
 │   │   │   └── ChatButton.jsx
 │   │   └── services/
 │   │       └── chat.js         # SumoPod API client
@@ -292,6 +323,12 @@ Kamera `road_type = "toll"` dikecualikan otomatis — tidak ada lampu merah di t
 
 ### COALESCE Strategy (Two-Table Schema)
 Tabel `cctv_locations` adalah sumber kebenaran untuk koordinat dan nama kamera. Tabel `current_traffic` menyimpan data live. Query menggunakan `COALESCE(cl.lat, ct.lat)` agar data `cctv_locations` selalu menang, mencegah null crash di Leaflet.
+
+### Estimasi Tarif Tol
+Tarif berlaku untuk kendaraan Golongan I (sedan, jeep, pickup). Koridor yang didukung: KG–PG, BCKM Cawang, BCKM Bekasi Barat, Bekasi Timur. Deteksi otomatis berdasarkan kedekatan rute dengan kamera tol (radius 700m).
+
+### WebSocket
+Backend menggunakan `flask-socketio` dengan `async_mode='threading'` agar kompatibel dengan APScheduler. Nginx dikonfigurasi dengan blok `/socket.io/` khusus yang meneruskan header `Upgrade: websocket` ke backend. Socket.IO otomatis fallback ke HTTP long-polling jika WebSocket tidak tersedia.
 
 ---
 
