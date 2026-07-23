@@ -956,7 +956,7 @@ export default function Admin() {
       )}
     </div>
 
-      <ChatPopup visible={showChat} onClose={() => setShowChat(false)} />
+      <ChatPopup visible={showChat} onClose={() => setShowChat(false)} showEditMode />
       <ChatButton onOpen={() => setShowChat(true)} />
       <style>{`@keyframes bounce-dot{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}`}</style>
     </>

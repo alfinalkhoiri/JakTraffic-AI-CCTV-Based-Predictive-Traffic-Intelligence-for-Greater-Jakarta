@@ -137,7 +137,7 @@ function LlmStatusDot({ status, model, error }) {
 }
 
 // ─── Komponen utama ChatPopup ─────────────────────────────────────────────────
-export default function ChatPopup({ visible, onClose, onMapCommands }) {
+export default function ChatPopup({ visible, onClose, onMapCommands, showEditMode = false }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [mode, setMode] = useState("chat");
@@ -601,22 +601,24 @@ export default function ChatPopup({ visible, onClose, onMapCommands }) {
           >
             {voiceReply ? '🔊' : '🔇'}
           </button>
-          {/* Mode toggle */}
-          <label className="flex items-center gap-1.5 cursor-pointer select-none">
-            <div
-              onClick={() => setMode((m) => (m === "chat" ? "edit" : "chat"))}
-              className={`w-10 h-5 rounded-full transition-colors relative ${mode === "edit" ? "bg-violet-600" : "bg-slate-600"}`}
-            >
-              <div className={`w-4 h-4 bg-white rounded-full absolute top-0.5 transition-all ${mode === "edit" ? "left-5" : "left-0.5"}`} />
-            </div>
-            <span className="text-xs text-slate-400">Edit</span>
-          </label>
+          {/* Mode Edit toggle — hanya operator */}
+          {showEditMode && (
+            <label className="flex items-center gap-1.5 cursor-pointer select-none">
+              <div
+                onClick={() => setMode((m) => (m === "chat" ? "edit" : "chat"))}
+                className={`w-10 h-5 rounded-full transition-colors relative ${mode === "edit" ? "bg-violet-600" : "bg-slate-600"}`}
+              >
+                <div className={`w-4 h-4 bg-white rounded-full absolute top-0.5 transition-all ${mode === "edit" ? "left-5" : "left-0.5"}`} />
+              </div>
+              <span className="text-xs text-slate-400">Edit</span>
+            </label>
+          )}
           <button onClick={onClose} className="text-slate-400 hover:text-white text-lg leading-none">✕</button>
         </div>
       </div>
 
-      {/* Edit mode banner */}
-      {mode === "edit" && (
+      {/* Edit mode banner — hanya operator */}
+      {showEditMode && mode === "edit" && (
         <div className="px-3 py-1.5 bg-violet-900/40 border-b border-violet-800 text-xs text-violet-300">
           ✏️ Ketik perintah perubahan UI — AI akan langsung edit source code
         </div>
