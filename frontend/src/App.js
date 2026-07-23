@@ -459,6 +459,68 @@ export default function App() {
   const [compareMode, setCompareMode]   = useState(null); // { ids:[1,5] } — sidebar compare
   const [compareData, setCompareData]   = useState({});
   const [showPanel, setShowPanel]        = useState(false);   // { [id]: { cctv, history, nowVsUsual } }
+  const [voiceEnabled, setVoiceEnabled]  = useState(false);
+
+  /* ================= VOICE (Web Speech API) ================= */
+  const voiceEnabledRef = useRef(false);
+  useEffect(() => { voiceEnabledRef.current = voiceEnabled; }, [voiceEnabled]);
+
+  // Aktif/nonaktif voice — umumkan konfirmasi
+  useEffect(() => {
+    if (!('speechSynthesis' in window)) return;
+    if (voiceEnabled) {
+      window.speechSynthesis.cancel();
+      const utt = new SpeechSynthesisUtterance('Panduan suara diaktifkan.');
+      utt.lang = 'id-ID'; utt.rate = 0.92;
+      const doSpeak = () => {
+        const v = window.speechSynthesis.getVoices();
+        const id = v.find(x => x.lang === 'id-ID') || v.find(x => x.lang.startsWith('id'));
+        if (id) utt.voice = id;
+        window.speechSynthesis.speak(utt);
+      };
+      window.speechSynthesis.getVoices().length === 0
+        ? window.speechSynthesis.addEventListener('voiceschanged', doSpeak, { once: true })
+        : doSpeak();
+    } else {
+      window.speechSynthesis.cancel();
+    }
+  }, [voiceEnabled]);
+
+  const speak = useCallback((text, interrupt = true) => {
+    if (!voiceEnabledRef.current || !('speechSynthesis' in window)) return;
+    if (interrupt) window.speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.lang = 'id-ID'; utt.rate = 0.92; utt.pitch = 1.0;
+    const doSpeak = () => {
+      const voices = window.speechSynthesis.getVoices();
+      const id = voices.find(v => v.lang === 'id-ID') || voices.find(v => v.lang.startsWith('id'));
+      if (id) utt.voice = id;
+      window.speechSynthesis.speak(utt);
+    };
+    window.speechSynthesis.getVoices().length === 0
+      ? window.speechSynthesis.addEventListener('voiceschanged', doSpeak, { once: true })
+      : doSpeak();
+  }, []);
+
+  const speakAllSteps = useCallback(() => {
+    if (!('speechSynthesis' in window) || routeSteps.length === 0) return;
+    window.speechSynthesis.cancel();
+    routeSteps.forEach(step => {
+      const utt = new SpeechSynthesisUtterance(
+        `${maneuverLabel(step.type, step.modifier)}${step.name ? ' di ' + step.name : ''}, sejauh ${fmtDist(step.distance)}.`
+      );
+      utt.lang = 'id-ID'; utt.rate = 0.92;
+      const doSpeak = () => {
+        const voices = window.speechSynthesis.getVoices();
+        const id = voices.find(v => v.lang === 'id-ID') || voices.find(v => v.lang.startsWith('id'));
+        if (id) utt.voice = id;
+        window.speechSynthesis.speak(utt);
+      };
+      window.speechSynthesis.getVoices().length === 0
+        ? window.speechSynthesis.addEventListener('voiceschanged', doSpeak, { once: true })
+        : doSpeak();
+    });
+  }, [routeSteps]);
 
   /* ================= LOAD CCTV ================= */
   useEffect(() => {
@@ -700,6 +762,23 @@ export default function App() {
       .catch(() => setNextHourPrediction(null));
   
   }, [startPoint, endPoint, cctv]);
+  /* ================= VOICE: rute ================= */
+  useEffect(() => {
+    if (!eta || !routeNames) return;
+    const timer = setTimeout(() => {
+      speak(`Rute dari ${routeNames.from} ke ${routeNames.to}. Jarak ${eta.distance} kilometer, perkiraan ${eta.time} menit.`);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [eta, routeNames]);
+
+  /* ================= VOICE: CCTV dipilih ================= */
+  useEffect(() => {
+    if (!selected) return;
+    const v = selected.vehicles || 0;
+    const label = v > 40 ? 'padat' : v > 20 ? 'ramai' : 'lancar';
+    speak(`${selected.name}. Kondisi ${label}, ${v} kendaraan terdeteksi.`);
+  }, [selected]);
+
   /* ================= CCTV DETAIL ================= */
   useEffect(() => {
     if (!selected) return;
@@ -957,6 +1036,13 @@ export default function App() {
               PREDIKSI {predictionMode}m
             </span>
           )}
+          <button
+            onClick={() => setVoiceEnabled(v => !v)}
+            style={{ ...S.btn(voiceEnabled), minWidth:32 }}
+            title={voiceEnabled ? 'Matikan panduan suara' : 'Aktifkan panduan suara'}
+          >
+            {voiceEnabled ? '🔊' : '🔇'}
+          </button>
           <button onClick={() => setShowChat(v => !v)} style={S.btn(showChat)}>🤖 AI Chat</button>
           <a href="/admin" style={{ fontSize:10, color:'#64748b', textDecoration:'none', padding:'5px 10px', background:'rgba(255,255,255,.04)', borderRadius:7, border:'1px solid rgba(255,255,255,.07)', fontWeight:600 }}>⚙ Operator</a>
         </div>
@@ -1261,7 +1347,16 @@ export default function App() {
               {/* Turn-by-turn */}
               {routeSteps.length > 0 && (
                 <div style={S.card}>
-                  <div style={S.label}>Petunjuk Arah</div>
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+                    <div style={S.label}>Petunjuk Arah</div>
+                    <button
+                      onClick={speakAllSteps}
+                      title="Baca semua petunjuk arah"
+                      style={{ background:'rgba(56,189,248,.12)', border:'1px solid rgba(56,189,248,.25)', borderRadius:6, padding:'3px 9px', fontSize:10, color:'#38bdf8', cursor:'pointer', fontWeight:700, display:'flex', alignItems:'center', gap:4 }}
+                    >
+                      🔊 <span>Baca</span>
+                    </button>
+                  </div>
                   <div style={{ maxHeight:180, overflowY:'auto' }}>
                     {routeSteps.map((step, i) => (
                       <div key={i} style={{ display:'flex', alignItems:'flex-start', gap:8, padding:'6px 0', borderBottom: i<routeSteps.length-1?'1px solid rgba(255,255,255,.05)':'none' }}>
