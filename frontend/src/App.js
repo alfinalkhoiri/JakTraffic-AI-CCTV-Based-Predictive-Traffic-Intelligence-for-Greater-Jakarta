@@ -395,6 +395,28 @@ function FlyToHandler({ target }) {
   return null;
 }
 
+/* ================= FIT BOUNDS HANDLER (route) ================= */
+function FitBoundsHandler({ segments }) {
+  const map = useMap();
+  const prevKey = useRef(0);
+  useEffect(() => {
+    if (!segments || segments.length === 0) { prevKey.current = 0; return; }
+    const key = segments.length;
+    if (key === prevKey.current) return;
+    prevKey.current = key;
+    const allPoints = segments.flatMap(s => s.points);
+    if (allPoints.length > 0) {
+      map.fitBounds(allPoints, {
+        paddingTopLeft:     [340, 70],
+        paddingBottomRight: [30, 30],
+        animate: true,
+        duration: 1.0,
+      });
+    }
+  }, [segments, map]);
+  return null;
+}
+
 /* ================= MAIN APP ================= */
 export default function App() {
   const [cctv, setCctv] = useState([]);
@@ -945,6 +967,7 @@ export default function App() {
         <TileLayer attribution='&copy; <a href="https://carto.com">CARTO</a>' url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
         <MapClickHandler onPick={handleMapPick} />
         <FlyToHandler target={mapFlyTo} />
+        <FitBoundsHandler segments={routeSegments} />
 
         {startPoint && (
           <Marker position={[startPoint.lat, startPoint.lng]} icon={startIcon} draggable eventHandlers={{ dragend: e => setStartPoint(e.target.getLatLng()) }}>
@@ -1241,13 +1264,13 @@ export default function App() {
                   <div style={S.label}>Petunjuk Arah</div>
                   <div style={{ maxHeight:180, overflowY:'auto' }}>
                     {routeSteps.map((step, i) => (
-                      <div key={i} style={{ display:'flex', alignItems:'flex-start', gap:8, padding:'5px 0', borderBottom: i<routeSteps.length-1?'1px solid rgba(255,255,255,.05)':'none' }}>
-                        <span style={{ fontSize:14, flexShrink:0, lineHeight:1.3 }}>{step.icon}</span>
+                      <div key={i} style={{ display:'flex', alignItems:'flex-start', gap:8, padding:'6px 0', borderBottom: i<routeSteps.length-1?'1px solid rgba(255,255,255,.05)':'none' }}>
+                        <span style={{ fontSize:16, flexShrink:0, lineHeight:1.3, minWidth:22, textAlign:'center' }}>{maneuverIcon(step.type, step.modifier)}</span>
                         <div style={{ flex:1 }}>
-                          <div style={{ fontSize:11, fontWeight:600 }}>{step.instruction}</div>
+                          <div style={{ fontSize:11, fontWeight:600, color:'#e2e8f0' }}>{maneuverLabel(step.type, step.modifier)}</div>
                           {step.name && <div style={{ fontSize:9, color:'#64748b', marginTop:1 }}>{step.name}</div>}
                         </div>
-                        {step.distance && <span style={{ fontSize:10, color:'#475569', flexShrink:0, fontVariantNumeric:'tabular-nums' }}>{step.distance}</span>}
+                        {step.distance > 0 && <span style={{ fontSize:10, color:'#38bdf8', flexShrink:0, fontVariantNumeric:'tabular-nums', fontWeight:700 }}>{fmtDist(step.distance)}</span>}
                       </div>
                     ))}
                   </div>
