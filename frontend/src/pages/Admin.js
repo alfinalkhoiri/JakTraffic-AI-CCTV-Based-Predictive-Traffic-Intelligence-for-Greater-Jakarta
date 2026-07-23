@@ -235,6 +235,13 @@ export default function Admin() {
   };
 
   /* ---------- EFFECT ---------- */
+  // Auth check
+  useEffect(() => {
+    if (sessionStorage.getItem('admin_auth') !== '1') {
+      window.location.replace('/admin-login');
+    }
+  }, []);
+
   useEffect(() => {
     fetchCCTV();
     axios.get(`${API_BASE}/api/model-info`)
@@ -410,6 +417,12 @@ export default function Admin() {
           </Link>
           <button onClick={() => setShowChat(v => !v)} style={{ width:'100%', display:'flex', alignItems:'center', gap:8, padding:'8px 10px', borderRadius:8, fontSize:11, color:showChat?'#f59e0b':'#64748b', background:showChat?'rgba(245,158,11,.1)':'transparent', border:'none', cursor:'pointer', fontWeight:600, marginTop:2 }}>
             🤖 <span>AI Assistant</span>
+          </button>
+          <button
+            onClick={() => { sessionStorage.removeItem('admin_auth'); window.location.replace('/admin-login'); }}
+            style={{ width:'100%', background:'rgba(239,68,68,.1)', border:'1px solid rgba(239,68,68,.2)', borderRadius:7, padding:'8px 0', fontSize:11, color:'#f87171', fontWeight:700, cursor:'pointer', marginTop:6 }}
+          >
+            🔓 Keluar
           </button>
         </div>
       </aside>

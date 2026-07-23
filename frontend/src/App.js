@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import { io } from "socket.io-client";
 
 import {
   MapContainer,
@@ -8,6 +9,7 @@ import {
   Marker,
   Popup,
   Polyline,
+  Polygon,
   Circle,
   Tooltip as LeafletTooltip,
   useMapEvents,
@@ -33,6 +35,33 @@ import ChatPopup from "./components/ChatPopup";
 import MapPopup from "./components/MapPopup";
 
 const API = process.env.REACT_APP_API_URL || "";
+
+/* ─── Zona Rawan Banjir (BPBD DKI Jakarta) ──────────────────────────────── */
+const FLOOD_ZONES = [
+  // HIGH RISK
+  { name: 'Pluit – Penjaringan',        risk: 'HIGH',   coords: [[-6.108,106.790],[-6.108,106.825],[-6.133,106.825],[-6.133,106.790]] },
+  { name: 'Cengkareng – Kalideres',     risk: 'HIGH',   coords: [[-6.109,106.706],[-6.109,106.748],[-6.154,106.748],[-6.154,106.706]] },
+  { name: 'Kampung Melayu – Bukit Duri',risk: 'HIGH',   coords: [[-6.218,106.855],[-6.218,106.880],[-6.248,106.880],[-6.248,106.855]] },
+  { name: 'Rawa Buaya – Cengkareng Barat', risk: 'HIGH', coords: [[-6.118,106.718],[-6.118,106.745],[-6.148,106.745],[-6.148,106.718]] },
+  // MEDIUM RISK
+  { name: 'Kelapa Gading',              risk: 'MEDIUM', coords: [[-6.138,106.880],[-6.138,106.922],[-6.170,106.922],[-6.170,106.880]] },
+  { name: 'Grogol – Tanjung Duren',     risk: 'MEDIUM', coords: [[-6.158,106.773],[-6.158,106.802],[-6.190,106.802],[-6.190,106.773]] },
+  { name: 'Jatinegara – Cakung',        risk: 'MEDIUM', coords: [[-6.188,106.888],[-6.188,106.942],[-6.218,106.942],[-6.218,106.888]] },
+  { name: 'Manggarai – Tebet',          risk: 'MEDIUM', coords: [[-6.218,106.838],[-6.218,106.858],[-6.240,106.858],[-6.240,106.838]] },
+  // LOW RISK
+  { name: 'Cilincing',                  risk: 'LOW',    coords: [[-6.098,106.910],[-6.098,106.952],[-6.135,106.952],[-6.135,106.910]] },
+  { name: 'Pasar Minggu – Pejaten',     risk: 'LOW',    coords: [[-6.278,106.835],[-6.278,106.870],[-6.312,106.870],[-6.312,106.835]] },
+];
+const FLOOD_RISK_COLOR = { HIGH: '#ef4444', MEDIUM: '#f97316', LOW: '#eab308' };
+const FLOOD_RISK_LABEL = { HIGH: 'Risiko Tinggi', MEDIUM: 'Risiko Sedang', LOW: 'Risiko Rendah' };
+
+/* ─── Koridor Tol & Tarif (Golongan I — sedan/jeep) ─────────────────────── */
+const TOLL_CORRIDORS = [
+  { id: 'kg-pg',   name: 'Tol KG–PG',           camIds: [29,30,31,32,33,34], price: 9000  },
+  { id: 'bckm-1',  name: 'Tol BCKM — Cawang',   camIds: [35],               price: 4500  },
+  { id: 'bckm-2',  name: 'Tol BCKM — Bks Barat', camIds: [36,37],           price: 7000  },
+  { id: 'bks-tmr', name: 'Tol Bekasi Timur',      camIds: [43],               price: 5000  },
+];
 
 /* =============== Helper 1 Jam Predik ================= */
 const predictionStyle = (status) => {
@@ -460,6 +489,21 @@ export default function App() {
   const [compareData, setCompareData]   = useState({});
   const [showPanel, setShowPanel]        = useState(false);
   const [voiceEnabled, setVoiceEnabled]  = useState(false);
+  const [altRoutes, setAltRoutes]         = useState([]);   // [{segments,eta,steps,condition,condColor,coords}]
+  const [activeRouteIdx, setActiveRouteIdx] = useState(0);
+  const notifConditionRef = useRef(null);
+  const notifiedIncidentsRef = useRef(new Set());
+  const [notifEnabled, setNotifEnabled]   = useState(false);
+
+  // Overlay banjir
+  const [showFlood, setShowFlood]         = useState(false);
+
+  // Estimasi tarif tol
+  const [tollEstimate, setTollEstimate]   = useState(null); // { corridors, total }
+
+  // WebSocket
+  const [wsConnected, setWsConnected]     = useState(false);
+  const socketRef = useRef(null);
 
   // Geocoding search
   const [searchFrom, setSearchFrom]       = useState('');
@@ -529,6 +573,16 @@ export default function App() {
     });
   }, [routeSteps]);
 
+  const toggleNotif = useCallback(async () => {
+    if (notifEnabled) { setNotifEnabled(false); return; }
+    if (!('Notification' in window)) { alert('Browser tidak mendukung notifikasi.'); return; }
+    const perm = await Notification.requestPermission();
+    if (perm === 'granted') {
+      setNotifEnabled(true);
+      new Notification('JakTraffic AI 🚦', { body: 'Notifikasi lalu lintas diaktifkan. Anda akan diberi tahu saat kondisi rute berubah.', icon: '/favicon.ico' });
+    }
+  }, [notifEnabled]);
+
   /* ================= GEOCODING (Nominatim) ================= */
   const geocodeSearch = useCallback(async (query, target) => {
     if (!query || query.length < 2) { setSearchHits([]); return; }
@@ -588,6 +642,26 @@ export default function App() {
   useEffect(() => { if (!startPoint) setSearchFrom(''); }, [startPoint]);
   useEffect(() => { if (!endPoint)   setSearchTo('');   }, [endPoint]);
 
+  /* ================= WEBSOCKET ================= */
+  useEffect(() => {
+    const base = process.env.REACT_APP_API_URL || window.location.origin;
+    const socket = io(base, {
+      transports: ['websocket', 'polling'],
+      reconnectionDelay: 3000,
+      reconnectionAttempts: 15,
+    });
+    socketRef.current = socket;
+    socket.on('connect',    ()     => setWsConnected(true));
+    socket.on('disconnect', ()     => setWsConnected(false));
+    socket.on('traffic_update', (data) => {
+      if (Array.isArray(data)) {
+        setCctv(data);
+        cctvRef.current = data;
+      }
+    });
+    return () => socket.disconnect();
+  }, []);
+
   /* ================= LOAD CCTV ================= */
   useEffect(() => {
     const load = async () => {
@@ -607,7 +681,8 @@ export default function App() {
       cctvRef.current = res.data;  // ← sync ref
     };
     load();
-    const i = setInterval(load, 30000);
+    // Polling as fallback — WebSocket is primary source
+    const i = setInterval(load, 90000);
     return () => clearInterval(i);
   }, [predictionMode]);
 
@@ -625,6 +700,7 @@ export default function App() {
       setRouteNames(null);
       setRouteSteps([]);
       setWaypointETAs([]);
+      setAltRoutes([]); setActiveRouteIdx(0); setTollEstimate(null);
     }
   };
 
@@ -682,24 +758,72 @@ export default function App() {
           }
           return cctvItem.vehicles;
         };
-
         const trafficMult = (cctvItem) => {
           const v = getVehiclesForCCTV(cctvItem);
           return v > 30 ? 1.5 : v > 15 ? 1.25 : 1;
         };
 
-        // ── Step 1: Initial A→D fetch to get geometry ─────────────
-        // city mode → exclude motorway (avoid toll); toll/all → normal routing
         const excludeParam = routeMode === "city" ? "&exclude=motorway" : "";
-        const initUrl = `https://router.project-osrm.org/route/v1/driving/${startPoint.lng},${startPoint.lat};${endPoint.lng},${endPoint.lat}?overview=full&geometries=geojson&steps=true${excludeParam}`;
-        const initRes = await axios.get(initUrl);
-        const initCoords = initRes.data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
 
-        // ── Step 2: Detect intermediate CCTVs ─────────────────────
+        // ── Step 1: Fetch dengan alternatives ─────────────────────────
+        const initUrl = `https://router.project-osrm.org/route/v1/driving/${startPoint.lng},${startPoint.lat};${endPoint.lng},${endPoint.lat}?overview=full&geometries=geojson&steps=true&alternatives=3${excludeParam}`;
+        const initRes = await axios.get(initUrl);
+        const osrmRoutes = initRes.data.routes;
+
+        // ── Helper: bangun segmen berwarna ─────────────────────────────
+        const ZONE_R = 400;
+        const getSegStyle = (lat, lng) => {
+          const inZone = filteredCctv.filter(c => haversineDistance(lat, lng, c.lat, c.lng) <= ZONE_R);
+          if (inZone.length > 0) {
+            const worst = inZone.reduce((a, b) => getVehiclesForCCTV(a) >= getVehiclesForCCTV(b) ? a : b);
+            return { color: getTrafficColor(getVehiclesForCCTV(worst)), dashed: false };
+          }
+          const nearest = findNearestCCTV({ lat, lng }, filteredCctv);
+          return { color: nearest ? getTrafficColor(getVehiclesForCCTV(nearest)) : "#94a3b8", dashed: true };
+        };
+        const buildSegments = (coords) => {
+          const segs = [];
+          let cur = getSegStyle(coords[0][0], coords[0][1]);
+          let pts = [coords[0]];
+          for (let i = 1; i < coords.length; i++) {
+            const s = getSegStyle(coords[i][0], coords[i][1]);
+            if (s.color !== cur.color || s.dashed !== cur.dashed) {
+              pts.push(coords[i]);
+              segs.push({ points: [...pts], color: cur.color, dashed: cur.dashed });
+              pts = [coords[i]]; cur = s;
+            } else { pts.push(coords[i]); }
+          }
+          if (pts.length) segs.push({ points: pts, color: cur.color, dashed: cur.dashed });
+          return segs;
+        };
+
+        // ── Step 2: Proses semua alternatif (simplified) ──────────────
+        const midLat = (startPoint.lat + endPoint.lat) / 2;
+        const midLng = (startPoint.lng + endPoint.lng) / 2;
+        const midCCTV0 = findNearestCCTV({ lat: midLat, lng: midLng }, filteredCctv);
+
+        const processedAlts = osrmRoutes.map((r) => {
+          const coords = r.geometry.coordinates.map(c => [c[1], c[0]]);
+          const segs   = buildSegments(coords);
+          const mult   = midCCTV0 ? trafficMult(midCCTV0) : 1;
+          const tMin   = Math.round((r.duration / 60) * mult);
+          const tKm    = (r.distance / 1000).toFixed(1);
+          const hasRed = segs.some(s => s.color === "#ef4444");
+          const hasOrg = segs.some(s => s.color === "#f97316");
+          const cond   = hasRed ? 'padat' : hasOrg ? 'ramai' : 'lancar';
+          const cColor = hasRed ? '#f43f5e' : hasOrg ? '#f59e0b' : '#10b981';
+          const steps  = r.legs.flatMap(l => l.steps ?? []).map(s => ({
+            type: s.maneuver.type, modifier: s.maneuver.modifier ?? "straight",
+            name: s.name || "", distance: s.distance,
+          }));
+          return { segments: segs, eta: { time: tMin, distance: tKm }, condition: cond, condColor: cColor, steps, coords };
+        });
+
+        // ── Step 3: Full processing untuk primary route (waypoints + ETA per-leg) ──
+        const initCoords = osrmRoutes[0].geometry.coordinates.map(c => [c[1], c[0]]);
         const intermediates = detectIntermediateCCTVs(initCoords, filteredCctv, startPoint, endPoint);
 
-        // ── Step 3: Re-fetch with waypoints if intermediates exist ─
-        let route = initRes.data.routes[0];
+        let route = osrmRoutes[0];
         let coords = initCoords;
         if (intermediates.length > 0) {
           const allWps = [startPoint, ...intermediates, endPoint];
@@ -711,107 +835,66 @@ export default function App() {
           coords = route.geometry.coordinates.map(c => [c[1], c[0]]);
         }
 
-        // ── Step 4: Traffic-coloured polyline segments ─────────────
-        // Dalam zone (≤400m) → solid + warna zone terpadat
-        // Luar zone         → dashed + warna CCTV terdekat (estimasi)
-        const ZONE_R = 400;
-        const getSegmentStyle = (lat, lng) => {
-          const inZone = filteredCctv.filter(c =>
-            haversineDistance(lat, lng, c.lat, c.lng) <= ZONE_R
-          );
-          if (inZone.length > 0) {
-            const worst = inZone.reduce((a, b) =>
-              getVehiclesForCCTV(a) >= getVehiclesForCCTV(b) ? a : b
-            );
-            return { color: getTrafficColor(getVehiclesForCCTV(worst)), dashed: false };
-          }
-          // Luar zone: pakai CCTV terdekat sebagai estimasi
-          const nearest = findNearestCCTV({ lat, lng }, filteredCctv);
-          return {
-            color:  nearest ? getTrafficColor(getVehiclesForCCTV(nearest)) : "#94a3b8",
-            dashed: true,
-          };
-        };
-
-        const segments = [];
-        let cur       = getSegmentStyle(coords[0][0], coords[0][1]);
-        let curPoints = [coords[0]];
-        for (let i = 1; i < coords.length; i++) {
-          const s = getSegmentStyle(coords[i][0], coords[i][1]);
-          if (s.color !== cur.color || s.dashed !== cur.dashed) {
-            curPoints.push(coords[i]);
-            segments.push({ points: [...curPoints], color: cur.color, dashed: cur.dashed });
-            curPoints = [coords[i]];
-            cur       = s;
-          } else {
-            curPoints.push(coords[i]);
-          }
-        }
-        if (curPoints.length > 0) segments.push({ points: curPoints, color: cur.color, dashed: cur.dashed });
-        setRouteSegments(segments);
-
-        // ── Step 5: Per-leg cumulative ETA ─────────────────────────
-        const legs        = route.legs;
+        const fullSegments = buildSegments(coords);
+        const legs = route.legs;
         const allWaypoints = [startPoint, ...intermediates, endPoint];
-        let cumMin = 0;
-        let cumKm  = 0;
+        let cumMin = 0, cumKm = 0;
         const newWaypointETAs = [];
 
         for (let i = 0; i < legs.length; i++) {
-          const wpStart  = allWaypoints[i];
-          const wpEnd    = allWaypoints[i + 1];
-          const midLat   = (wpStart.lat + wpEnd.lat) / 2;
-          const midLng   = (wpStart.lng + wpEnd.lng) / 2;
-          const midCCTV  = findNearestCCTV({ lat: midLat, lng: midLng }, filteredCctv);
-          const mult     = midCCTV ? trafficMult(midCCTV) : 1;
-          const legMin   = Math.round((legs[i].duration / 60) * mult);
-          const legKm    = (legs[i].distance / 1000).toFixed(1);
+          const wpStart = allWaypoints[i];
+          const wpEnd   = allWaypoints[i + 1];
+          const mLat = (wpStart.lat + wpEnd.lat) / 2;
+          const mLng = (wpStart.lng + wpEnd.lng) / 2;
+          const mCCTV = findNearestCCTV({ lat: mLat, lng: mLng }, filteredCctv);
+          const mult  = mCCTV ? trafficMult(mCCTV) : 1;
+          const legMin = Math.round((legs[i].duration / 60) * mult);
+          const legKm  = (legs[i].distance / 1000).toFixed(1);
           cumMin += legMin;
           cumKm  += legs[i].distance / 1000;
-
           if (i < intermediates.length) {
-            // Badge di CCTV intermediate: tampilkan waktu segmen A→sini
-            newWaypointETAs.push({
-              cctv_id:     intermediates[i].id,
-              lat:         intermediates[i].lat,
-              lng:         intermediates[i].lng,
-              segment_min: legMin,
-              segment_km:  legKm,
-            });
+            newWaypointETAs.push({ cctv_id: intermediates[i].id, lat: intermediates[i].lat, lng: intermediates[i].lng, segment_min: legMin, segment_km: legKm });
           } else if (intermediates.length > 0) {
-            // Badge di tujuan akhir: tampilkan waktu segmen dari waypoint sebelumnya
-            newWaypointETAs.push({
-              cctv_id:      "destination",
-              lat:          endPoint.lat,
-              lng:          endPoint.lng,
-              segment_min:  legMin,
-              segment_km:   legKm,
-              isDestination: true,
-            });
+            newWaypointETAs.push({ cctv_id: "destination", lat: endPoint.lat, lng: endPoint.lng, segment_min: legMin, segment_km: legKm, isDestination: true });
           }
         }
 
-        setWaypointETAs(newWaypointETAs);
-        setEta({ time: cumMin, distance: cumKm.toFixed(1) });
-
-        // ── Step 6: Turn-by-turn steps (flatten all legs) ──────────
         const allSteps = legs.flatMap(l => l.steps ?? []);
         const mappedSteps = allSteps.map(s => ({
-          type:     s.maneuver.type,
-          modifier: s.maneuver.modifier ?? "straight",
-          name:     s.name || "",
-          distance: s.distance,
+          type: s.maneuver.type, modifier: s.maneuver.modifier ?? "straight",
+          name: s.name || "", distance: s.distance,
         }));
+
+        // Update primary route dengan full data
+        processedAlts[0] = { ...processedAlts[0], segments: fullSegments, eta: { time: cumMin, distance: cumKm.toFixed(1) }, steps: mappedSteps };
+
+        // ── Estimasi tarif tol ───────────────────────────────────────────────
+        const tolledCors = TOLL_CORRIDORS.filter(tc =>
+          tc.camIds.some(cid => {
+            const cam = cctv.find(c => c.id === cid);
+            if (!cam || !cam.lat || !cam.lng) return false;
+            return coords.some(([lat, lng]) => haversineDistance(lat, lng, cam.lat, cam.lng) < 700);
+          })
+        );
+        setTollEstimate(tolledCors.length
+          ? { corridors: tolledCors, total: tolledCors.reduce((s, t) => s + t.price, 0) }
+          : null
+        );
+
+        setAltRoutes(processedAlts);
+        setActiveRouteIdx(0);
+        setRouteSegments(fullSegments);
+        setWaypointETAs(newWaypointETAs);
+        setEta({ time: cumMin, distance: cumKm.toFixed(1) });
         setRouteSteps(mappedSteps);
 
-        // ── Voice: umumkan ringkasan rute ──────────────────────────
+        // Voice
         const fromName = routeNames?.from || 'titik awal';
         const toName   = routeNames?.to   || 'tujuan';
+        const altText  = processedAlts.length > 1 ? ` Ada ${processedAlts.length} pilihan rute.` : '';
         const firstStep = mappedSteps[0];
-        const firstTxt  = firstStep
-          ? `. ${maneuverLabel(firstStep.type, firstStep.modifier)}${firstStep.name ? ' di ' + firstStep.name : ''}`
-          : '';
-        speak(`Rute dari ${fromName} ke ${toName}. Jarak ${cumKm.toFixed(1)} kilometer, perkiraan ${cumMin} menit${firstTxt}.`);
+        const firstTxt  = firstStep ? `. ${maneuverLabel(firstStep.type, firstStep.modifier)}${firstStep.name ? ' di ' + firstStep.name : ''}` : '';
+        speak(`Rute dari ${fromName} ke ${toName}. Jarak ${cumKm.toFixed(1)} kilometer, perkiraan ${cumMin} menit.${altText}${firstTxt}`);
 
       } catch (err) {
         console.error("Routing error:", err);
@@ -838,6 +921,43 @@ export default function App() {
       .catch(() => setNextHourPrediction(null));
   
   }, [startPoint, endPoint, cctv]);
+
+  /* ================= NOTIFIKASI RUTE ================= */
+  useEffect(() => {
+    if (!notifEnabled || !routeSegments.length) return;
+    const hasRed = routeSegments.some(s => s.color === '#ef4444');
+    const hasOrg = routeSegments.some(s => s.color === '#f97316');
+    const cond = hasRed ? 'padat' : hasOrg ? 'ramai' : 'lancar';
+    if (notifConditionRef.current !== null && notifConditionRef.current !== cond) {
+      const msgs = {
+        padat:  ['⚠️ Rute Macet — JakTraffic', 'Rute Anda kini PADAT. Pertimbangkan rute alternatif.'],
+        ramai:  ['🚦 Rute Mulai Ramai — JakTraffic', 'Kepadatan meningkat di sepanjang rute.'],
+        lancar: ['✅ Rute Kembali Lancar — JakTraffic', 'Kondisi rute Anda sudah membaik.'],
+      };
+      const [title, body] = msgs[cond];
+      new Notification(title, { body, icon: '/favicon.ico' });
+    }
+    notifConditionRef.current = cond;
+  }, [routeSegments, notifEnabled]);
+
+  useEffect(() => {
+    if (!notifEnabled || !tomtomIncidents.length || !routeSegments.length) return;
+    const routePoints = routeSegments.flatMap(s => s.points);
+    tomtomIncidents.forEach(inc => {
+      if (!inc.lat || !inc.lng) return;
+      const key = `${inc.lat}-${inc.lng}-${inc.category}`;
+      if (notifiedIncidentsRef.current.has(key)) return;
+      const near = routePoints.some(([lat, lng]) => haversineDistance(lat, lng, inc.lat, inc.lng) < 800);
+      if (near) {
+        notifiedIncidentsRef.current.add(key);
+        new Notification(`🚨 ${INCIDENT_LABELS[inc.category] || 'Insiden'} — JakTraffic`, {
+          body: `${INCIDENT_LABELS[inc.category] || 'Insiden'} terdeteksi di dekat rute Anda.`,
+          icon: '/favicon.ico',
+        });
+      }
+    });
+  }, [tomtomIncidents, notifEnabled, routeSegments]);
+
   /* ================= CCTV DETAIL ================= */
   useEffect(() => {
     if (!selected) return;
@@ -977,6 +1097,7 @@ export default function App() {
           setRouteNames(null);
           setRouteSteps([]);
           setWaypointETAs([]);
+          setAltRoutes([]); setActiveRouteIdx(0);
           break;
         }
 
@@ -1095,6 +1216,24 @@ export default function App() {
               PREDIKSI {predictionMode}m
             </span>
           )}
+          <span
+            title={wsConnected ? 'Live WebSocket — data real-time' : 'WebSocket terputus — polling fallback aktif'}
+            style={{ width:7, height:7, borderRadius:'50%', flexShrink:0, background: wsConnected ? '#22c55e' : '#f59e0b', boxShadow: wsConnected ? '0 0 7px #22c55e' : 'none', cursor:'default' }}
+          />
+          <button
+            onClick={() => setShowFlood(v => !v)}
+            style={{ ...S.btn(showFlood), minWidth:32 }}
+            title={showFlood ? 'Sembunyikan zona banjir' : 'Tampilkan zona rawan banjir'}
+          >
+            🌊
+          </button>
+          <button
+            onClick={toggleNotif}
+            style={{ ...S.btn(notifEnabled), minWidth:32 }}
+            title={notifEnabled ? 'Matikan notifikasi rute' : 'Aktifkan notifikasi rute'}
+          >
+            {notifEnabled ? '🔔' : '🔕'}
+          </button>
           <button
             onClick={() => setVoiceEnabled(v => !v)}
             style={{ ...S.btn(voiceEnabled), minWidth:32 }}
@@ -1113,6 +1252,19 @@ export default function App() {
         <MapClickHandler onPick={handleMapPick} />
         <FlyToHandler target={mapFlyTo} />
         <FitBoundsHandler segments={routeSegments} />
+
+        {/* Overlay zona rawan banjir */}
+        {showFlood && FLOOD_ZONES.map((z, i) => (
+          <Polygon
+            key={`flood-${i}`}
+            positions={z.coords}
+            pathOptions={{ color: FLOOD_RISK_COLOR[z.risk], fillColor: FLOOD_RISK_COLOR[z.risk], fillOpacity: 0.18, weight: 1.5, opacity: 0.55, dashArray: '5 3' }}
+          >
+            <LeafletTooltip sticky direction="top">
+              🌊 {z.name} — {FLOOD_RISK_LABEL[z.risk]}
+            </LeafletTooltip>
+          </Polygon>
+        ))}
 
         {startPoint && (
           <Marker position={[startPoint.lat, startPoint.lng]} icon={startIcon} draggable eventHandlers={{ dragend: e => setStartPoint(e.target.getLatLng()) }}>
@@ -1133,6 +1285,11 @@ export default function App() {
               <Popup><b style={{ color: line.color }}>🛣️ {line.name}</b></Popup>
             </Polyline>
           </React.Fragment>
+        ))}
+
+        {/* Rute alternatif (tidak aktif) */}
+        {altRoutes.filter((_, idx) => idx !== activeRouteIdx).map((r, i) => (
+          <Polyline key={`alt-bg-${i}`} positions={r.coords} pathOptions={{ color:'#475569', weight:3, opacity:0.3, dashArray:'7 5' }} interactive={false} />
         ))}
 
         {routeSegments.map((seg, idx) => (
@@ -1180,6 +1337,20 @@ export default function App() {
           );
         })}
       </MapContainer>
+
+      {/* Flood legend */}
+      {showFlood && (
+        <div style={{ position:'absolute', bottom:32, right:14, zIndex:900, background:'rgba(2,11,24,.93)', border:'1px solid rgba(255,255,255,.1)', borderRadius:10, padding:'10px 13px', minWidth:168, pointerEvents:'none' }}>
+          <div style={{ fontSize:9, fontWeight:800, color:'#64748b', letterSpacing:.8, textTransform:'uppercase', marginBottom:7 }}>🌊 Zona Rawan Banjir</div>
+          {[['HIGH','#ef4444'],['MEDIUM','#f97316'],['LOW','#eab308']].map(([risk, c]) => (
+            <div key={risk} style={{ display:'flex', alignItems:'center', gap:7, marginBottom:4 }}>
+              <div style={{ width:12, height:12, borderRadius:3, background:c, opacity:.75, flexShrink:0 }} />
+              <span style={{ fontSize:10, color:'#cbd5e1' }}>{FLOOD_RISK_LABEL[risk]}</span>
+            </div>
+          ))}
+          <div style={{ fontSize:8, color:'#475569', marginTop:5, borderTop:'1px solid rgba(255,255,255,.06)', paddingTop:5 }}>Sumber: BPBD DKI Jakarta</div>
+        </div>
+      )}
 
       {/* ══ LEFT PANEL ═════════════════════════════════════════════ */}
       <aside style={{ ...S.panel, display: showPanel || window.innerWidth >= 768 ? 'flex' : 'none' }}>
@@ -1273,7 +1444,7 @@ export default function App() {
                   <div style={S.label}>Navigasi</div>
                   {(startPoint || endPoint) && (
                     <button
-                      onClick={() => { setStartPoint(null); setEndPoint(null); setRouteSegments([]); setEta(null); setRouteNames(null); setRouteSteps([]); setWaypointETAs([]); setSearchFrom(''); setSearchTo(''); }}
+                      onClick={() => { setStartPoint(null); setEndPoint(null); setRouteSegments([]); setEta(null); setRouteNames(null); setRouteSteps([]); setWaypointETAs([]); setSearchFrom(''); setSearchTo(''); setAltRoutes([]); setActiveRouteIdx(0); }}
                       style={{ fontSize:9, color:'#f43f5e', background:'rgba(244,63,94,.1)', border:'1px solid rgba(244,63,94,.2)', borderRadius:5, padding:'2px 7px', cursor:'pointer', fontWeight:700 }}
                     >
                       ✕ Reset
@@ -1479,6 +1650,49 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Rute alternatif tabs */}
+              {altRoutes.length > 1 && (
+                <div style={S.card}>
+                  <div style={S.label}>Pilihan Rute</div>
+                  <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
+                    {altRoutes.map((r, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => { setActiveRouteIdx(idx); setRouteSegments(r.segments); setEta(r.eta); setRouteSteps(r.steps); }}
+                        style={{ display:'flex', alignItems:'center', gap:8, background: idx===activeRouteIdx?'rgba(56,189,248,.12)':'rgba(255,255,255,.04)', border:`1px solid ${idx===activeRouteIdx?'rgba(56,189,248,.4)':'rgba(255,255,255,.08)'}`, borderRadius:8, padding:'8px 10px', cursor:'pointer', textAlign:'left', transition:'all .15s' }}
+                      >
+                        <span style={{ fontSize:10, fontWeight:800, color: idx===activeRouteIdx?'#38bdf8':'#64748b', flexShrink:0, minWidth:42 }}>Rute {idx+1}</span>
+                        <span style={{ width:1, background:'rgba(255,255,255,.1)', height:12, flexShrink:0 }} />
+                        <span style={{ fontSize:16, fontWeight:900, color:'#f0f9ff', fontVariantNumeric:'tabular-nums' }}>{r.eta.time}<span style={{ fontSize:9, color:'#64748b', fontWeight:400 }}>mnt</span></span>
+                        <span style={{ fontSize:10, color:'#64748b' }}>· {r.eta.distance}km</span>
+                        <span style={{ marginLeft:'auto', fontSize:9, fontWeight:700, color:r.condColor }}>● {r.condition.toUpperCase()}</span>
+                        {idx===activeRouteIdx && <span style={{ fontSize:9, color:'#38bdf8', fontWeight:700 }}>✓</span>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Estimasi tarif tol */}
+              {tollEstimate && (
+                <div style={S.card}>
+                  <div style={S.label}>Estimasi Tarif Tol</div>
+                  <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                    {tollEstimate.corridors.map((cor, i) => (
+                      <div key={cor.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', fontSize:11, color:'#94a3b8', padding:'3px 0', borderBottom: i<tollEstimate.corridors.length-1?'1px solid rgba(255,255,255,.05)':'none' }}>
+                        <span>🛣️ {cor.name}</span>
+                        <span style={{ color:'#e2e8f0', fontVariantNumeric:'tabular-nums', fontWeight:600 }}>Rp {cor.price.toLocaleString('id-ID')}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:8, paddingTop:6, borderTop:'1px solid rgba(255,255,255,.1)' }}>
+                    <span style={{ fontSize:11, fontWeight:700, color:'#f0f9ff' }}>Total Estimasi</span>
+                    <span style={{ fontSize:15, fontWeight:900, color:'#f59e0b', fontVariantNumeric:'tabular-nums' }}>Rp {tollEstimate.total.toLocaleString('id-ID')}</span>
+                  </div>
+                  <div style={{ fontSize:9, color:'#475569', marginTop:5 }}>*Golongan I (sedan/jeep). Tarif jalan non-tol tidak termasuk.</div>
+                </div>
+              )}
+
               {/* Turn-by-turn */}
               {routeSteps.length > 0 && (
                 <div style={S.card}>
@@ -1504,7 +1718,7 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  <button onClick={() => { setRouteSegments([]); setEta(null); setStartPoint(null); setEndPoint(null); setRouteNames(null); setRouteSteps([]); setWaypointETAs([]); setSearchFrom(''); setSearchTo(''); }}
+                  <button onClick={() => { setRouteSegments([]); setEta(null); setStartPoint(null); setEndPoint(null); setRouteNames(null); setRouteSteps([]); setWaypointETAs([]); setSearchFrom(''); setSearchTo(''); setAltRoutes([]); setActiveRouteIdx(0); setTollEstimate(null); }}
                     style={{ marginTop:8, width:'100%', background:'rgba(244,63,94,.1)', border:'1px solid rgba(244,63,94,.25)', borderRadius:7, padding:'6px 0', fontSize:11, color:'#f43f5e', fontWeight:700, cursor:'pointer' }}>
                     ✕ Batalkan Rute
                   </button>

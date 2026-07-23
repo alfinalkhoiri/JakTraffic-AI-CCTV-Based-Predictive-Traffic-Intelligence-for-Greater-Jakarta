@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
+from flask_socketio import SocketIO
 from apscheduler.schedulers.background import BackgroundScheduler
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
@@ -64,7 +65,8 @@ from core.predictor import TrafficPredictor
 
 # --- FLASK SETUP ---
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading", logger=False, engineio_logger=False)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -175,6 +177,13 @@ def mining_job():
                 logger.error(f"Thread error lokasi {cctv.get('id')}: {e}")
 
     logger.info("=== Mining selesai (%d kamera) ===", len(cctv_list))
+
+    # Push live update ke semua WebSocket client
+    try:
+        updated = db_handler.get_all_cctv_status()
+        socketio.emit("traffic_update", updated)
+    except Exception as _ws_err:
+        logger.warning("[WS] emit error: %s", _ws_err)
 
 
 scheduler = BackgroundScheduler()
@@ -2971,9 +2980,11 @@ def undo_edit():
 if __name__ == "__main__":
     # mining_job()  # DISABLED: Mining off
 
-    app.run(
+    socketio.run(
+        app,
         host="0.0.0.0",
         port=5000,
-        debug=True,
-        use_reloader=False
+        debug=False,
+        use_reloader=False,
+        allow_unsafe_werkzeug=True,
     )
