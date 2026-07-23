@@ -6,57 +6,85 @@ Sistem pemantauan dan prediksi lalu lintas berbasis AI untuk wilayah DKI Jakarta
 
 ---
 
+## Tampilan
+
+### Tampilan User (Pengendara)
+Peta full-screen dengan panel info mengambang. Dirancang agar mudah digunakan saat berkendara.
+
+- Navbar floating dengan ringkasan LANCAR / RAMAI / PADAT real-time
+- Panel kiri context-aware: idle guide → CCTV detail → routing → compare
+- Klik marker CCTV: status, kecepatan TomTom, grafik tren, rekomendasi sinyal
+- Klik 2× peta: buat rute A→B dengan petunjuk arah Bahasa Indonesia
+- Panduan suara (Web Speech API): auto-announce rute & kondisi CCTV
+
+### Tampilan Operator Dishub
+Dashboard command-center dengan sidebar tetap. Fokus pada monitoring dan pengelolaan.
+
+- Sidebar 220px dengan navigasi 5 tab
+- **Monitor** — daftar kamera diurutkan kepadatan + detail chart per kamera
+- **Analitik** — top 10 tersibuk, distribusi status, grafik tren
+- **Sinyal** — tabel rekomendasi lampu merah/hijau seluruh persimpangan
+- **AI Deteksi** — upload YOLO, simulasi kendaraan, info model Transformer
+- **Manajemen** — CRUD kamera CCTV
+
+---
+
 ## Fitur Utama
 
 ### Peta Interaktif Real-Time
-- 49 titik kamera CCTV DKI Jakarta + Bekasi
-- Marker berbeda: lingkaran (jalan kota) vs diamond (jalan tol)
-- Status lalu lintas: HIJAU / KUNING / MERAH berdasarkan jumlah kendaraan
-- Popup per kamera: preview live, status, dan rekomendasi sinyal adaptif
-- Filter mode rute: Semua / Non-Tol / Tol
-- Overlay koridor tol: KG-PG (Kelapa Gading–Pulo Gebang) & BCKM (Bekasi–Cawang–Kamp. Melayu)
-
-### Rekomendasi Sinyal Adaptif
-- Hitung durasi optimal fase hijau & merah berdasarkan kepadatan kendaraan
-- 3 level prioritas: TINGGI (>40 kend), NORMAL (20–40 kend), RENDAH (<20 kend)
-- Hanya berlaku untuk persimpangan berlampu — jalan tol dikecualikan otomatis
-- Tampil di popup peta, sidebar, dan admin dashboard
+- **100 titik kamera CCTV** — DKI Jakarta, Bekasi, dan ruas tol
+- Marker berbeda: lingkaran pulsing (jalan kota) vs diamond (jalan tol)
+- Status warna: HIJAU / KUNING / MERAH berdasarkan jumlah kendaraan terdeteksi
+- Overlay koridor tol: KG-PG, BCKM, JORR, Tol Dalam Kota, Tol Bekasi
+- Insiden TomTom langsung di peta (kecelakaan, kemacetan, penutupan jalan)
 
 ### Routing Cerdas
-- Routing berbasis OSRM (gratis, tanpa API key)
-- ETA real-time dengan koreksi kepadatan lalu lintas
-- Turn-by-turn navigation (petunjuk arah Bahasa Indonesia)
+- Routing via OSRM (open source, tanpa API key)
+- Polyline berwarna per segmen sesuai kepadatan zona CCTV terdekat
+- ETA real-time dengan koreksi kepadatan (1× / 1.25× / 1.5×)
+- Turn-by-turn navigation dengan petunjuk arah Bahasa Indonesia
+- Auto fit-bounds: peta otomatis zoom ke seluruh rute saat rute terbentuk
 - Prediksi kondisi 1 jam ke depan di sepanjang rute
 
+### Panduan Suara
+- Toggle 🔊/🔇 di navbar
+- Auto-announce saat rute selesai: nama asal→tujuan + jarak + ETA + langkah pertama
+- Auto-announce saat klik kamera: nama lokasi + kondisi + jumlah kendaraan
+- Tombol "Baca" untuk membacakan semua petunjuk arah berurutan
+- Web Speech API bawaan browser, bahasa id-ID, tanpa library tambahan
+
+### Rekomendasi Sinyal Adaptif
+- Durasi optimal fase hijau & merah berdasarkan kepadatan
+- 3 level: TINGGI (>40 kend → hijau 90s), NORMAL (20–40 → 60s), RENDAH (<20 → 30s)
+- Jalan tol dikecualikan otomatis (tidak ada lampu merah)
+
 ### TomTom Traffic Integration
-- **Traffic Flow API** — kecepatan nyata vs bebas hambatan per titik kamera (km/j)
-- **Traffic Incidents API** — kecelakaan, kemacetan, penutupan jalan di peta Jakarta–Bekasi
-- Efisiensi lajur ditampilkan di sidebar kamera terpilih
-- Insiden ditampilkan sebagai marker kuning/merah langsung di peta
+- **Flow API** — kecepatan nyata vs bebas hambatan per kamera (km/j)
+- **Incidents API** — kecelakaan, kemacetan, penutupan jalan area Jakarta–Bekasi
+- Cache in-process 60s (flow) / 120s (incidents) untuk efisiensi kuota
 
 ### YOLO 11 Vehicle Detection
 - Model: `yolo11n.pt` — deteksi mobil, motor, bus, truk
-- Upload gambar/video → deteksi + anotasi langsung
-- Hasil update jumlah kendaraan di peta secara real-time
-- Mode simulasi untuk demo tanpa sumber video
+- Upload gambar/video → deteksi + anotasi → update kamera di peta
+- Auto-aktif jika `stream_url` kamera bisa diakses dari VPS
+- Mode simulasi realistis berbasis pola jam WIB saat stream tidak tersedia
 
 ### AI Chatbot (SumoPod GPT-5 Nano)
-- Analisis kondisi lalu lintas via natural language (Bahasa Indonesia)
-- Kontrol peta: highlight lokasi, bandingkan 2 titik, set rute otomatis
+- Natural language Bahasa Indonesia
+- Context-aware: tahu kondisi 100 kamera + prediksi Transformer saat ini
+- Kontrol peta: zoom lokasi, set rute, highlight, bandingkan 2 titik
 - Streaming response real-time (Server-Sent Events)
-- Context-aware: tahu kondisi semua 49 kamera saat ini
 
 ### Prediksi Lalu Lintas (Transformer)
+- Arsitektur Transformer Encoder kustom (PyTorch)
 - Prediksi 15 menit dan 30 menit ke depan
 - Visualisasi prediksi langsung di peta (warna marker berubah)
-- Live prediction test di admin dashboard
 
-### Admin Dashboard
-- CRUD kamera CCTV (tambah, edit, hapus)
-- Activity trend chart per kamera (30m / 1h / 6h / 12h / 24h)
-- YOLO file detection dengan drag-and-drop
-- Sinyal overview: tabel semua persimpangan diurutkan prioritas
-- Info Transformer model (arsitektur, parameter, training stats)
+### Mobile App (Flutter)
+- Peta live CCTV dengan marker status real-time
+- Prediksi AI dan rute draggable
+- Chat streaming dengan AI
+- Tersedia untuk Android & iOS
 
 ---
 
@@ -64,38 +92,43 @@ Sistem pemantauan dan prediksi lalu lintas berbasis AI untuk wilayah DKI Jakarta
 
 | Layer | Teknologi |
 |---|---|
-| Frontend | React.js, Leaflet, Recharts, Tailwind CSS, Axios |
+| Web Frontend | React.js, Leaflet, Recharts, Axios |
+| Mobile | Flutter (Android & iOS) |
 | Backend | Python 3, Flask, APScheduler |
 | AI / CV | YOLO 11n (Ultralytics), OpenCV |
+| ML | PyTorch Transformer (time-series predictor) |
 | LLM | SumoPod GPT-5 Nano (OpenAI-compatible API) |
 | Database | PostgreSQL |
 | Routing | OSRM (open source) |
 | Traffic Data | TomTom Traffic Flow + Incidents API |
-| Deployment | Nginx + PM2 / systemd, VPS Ubuntu |
+| Voice | Web Speech API (browser native) |
+| Deployment | Nginx + PM2, VPS Ubuntu |
 
 ---
 
 ## Arsitektur Sistem
 
 ```
-Browser
+Browser / Mobile App
   ├── Peta Leaflet (React)          ← polling /api/cctv_status tiap 30 detik
   ├── AI Chatbot (SSE streaming)    ← /api/chat-stream
-  └── Admin Panel                   ← CRUD, YOLO upload, signal overview
+  └── Admin Dashboard               ← CRUD, YOLO upload, signal overview
 
 Flask Backend (:5000)
-  ├── APScheduler (tiap ~1 menit)   → hitung kendaraan (simulasi / YOLO)
-  ├── /api/cctv_status              → 49 kamera + has_signal + vehicles
+  ├── APScheduler (tiap ~2 menit)   → YOLO / simulasi → update DB
+  ├── /api/cctv_status              → 100 kamera + has_signal + vehicles
   ├── /api/signal-recommendation    → rekomendasi sinyal adaptif
-  ├── /api/predict-traffic          → prediksi Transformer 15/30 menit
+  ├── /api/predict-traffic          → Transformer 15/30 menit
+  ├── /api/predict-next-hour/<id>   → prediksi 1 jam ke depan
   ├── /api/detect-upload            → YOLO file detection
-  ├── /api/simulate-count           → update DB manual (admin)
+  ├── /api/tomtom-flow              → kecepatan jalan TomTom
+  ├── /api/tomtom-incidents         → insiden TomTom
   └── /api/chat-stream              → SSE proxy ke SumoPod LLM
 
 PostgreSQL
-  ├── current_traffic               → jumlah kendaraan terkini per lokasi
+  ├── current_traffic               → status kendaraan terkini per kamera
   ├── traffic_logs                  → historis setiap menit
-  └── cctv_locations                → metadata kamera (lat, lng, road_type)
+  └── cctv_locations                → metadata kamera (lat, lng, road_type, stream_url)
 ```
 
 ---
@@ -106,6 +139,7 @@ PostgreSQL
 - Python 3.10+
 - Node.js 18+
 - PostgreSQL
+- Flutter SDK (untuk mobile)
 - (Opsional) GPU untuk YOLO inference lebih cepat
 
 ### Backend
@@ -116,7 +150,7 @@ cp .env.example .env
 # Edit .env: isi DB_PASSWORD dan SUMOPOD_API_KEY
 
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 # Inisialisasi database
@@ -125,7 +159,7 @@ psql -U postgres -f init_db.sql
 python app.py
 ```
 
-### Frontend
+### Web Frontend
 
 ```bash
 cd frontend
@@ -134,7 +168,15 @@ npm install
 npm start
 ```
 
-Akses di `http://localhost:3000`
+Akses di `http://localhost:3000` (user) dan `http://localhost:3000/admin` (operator)
+
+### Mobile App
+
+```bash
+cd mobile
+flutter pub get
+flutter run
+```
 
 ---
 
@@ -164,7 +206,7 @@ BROWSER=none
 REACT_APP_CCTV_PROXY=https://your-worker.workers.dev
 ```
 
-> `REACT_APP_CCTV_PROXY` — opsional, untuk proxy stream HLS via Cloudflare Worker.
+> `REACT_APP_CCTV_PROXY` — opsional, untuk proxy stream HLS via Cloudflare Worker guna bypass CORS/geo-block.
 
 ---
 
@@ -181,8 +223,8 @@ REACT_APP_CCTV_PROXY=https://your-worker.workers.dev
 | GET | `/api/signal-recommendation/<id>` | Rekomendasi sinyal satu kamera |
 | POST | `/api/simulate-count` | Update jumlah kendaraan manual |
 | POST | `/api/detect-upload` | YOLO detection dari file gambar/video |
-| GET | `/api/tomtom-flow?lat=<lat>&lng=<lng>` | TomTom Traffic Flow — kecepatan nyata vs bebas hambatan |
-| GET | `/api/tomtom-incidents` | TomTom Incidents — kecelakaan & gangguan Jakarta–Bekasi |
+| GET | `/api/tomtom-flow?lat=&lng=` | Kecepatan jalan TomTom |
+| GET | `/api/tomtom-incidents` | Insiden TomTom area Jakarta–Bekasi |
 | POST | `/api/chat` | AI chatbot (non-streaming) |
 | POST | `/api/chat-stream` | AI chatbot (SSE streaming) |
 | GET | `/api/model-info` | Info Transformer model |
@@ -199,16 +241,16 @@ REACT_APP_CCTV_PROXY=https://your-worker.workers.dev
 │   │   ├── predictor.py        # Transformer traffic predictor
 │   │   └── scoring.py          # Risk score calculator
 │   ├── database/
-│   │   └── db_handler.py       # PostgreSQL handler + 49 lokasi BACKUP_COORDS
-│   ├── init_db.sql             # Schema + seed data 49 kamera
+│   │   └── db_handler.py       # PostgreSQL handler + BACKUP_COORDS 100 kamera
+│   ├── init_db.sql             # Schema + seed data
 │   ├── requirements.txt
 │   └── .env.example
 │
 ├── frontend/
 │   ├── src/
-│   │   ├── App.js              # Peta utama + routing + chatbot
+│   │   ├── App.js              # Tampilan User — peta + routing + suara + chatbot
 │   │   ├── pages/
-│   │   │   └── Admin.js        # Admin dashboard
+│   │   │   └── Admin.js        # Tampilan Operator Dishub — 5-tab dashboard
 │   │   ├── components/
 │   │   │   ├── MapPopup.jsx    # Popup kamera di peta
 │   │   │   ├── ChatPopup.jsx   # AI chatbot UI
@@ -217,7 +259,16 @@ REACT_APP_CCTV_PROXY=https://your-worker.workers.dev
 │   │       └── chat.js         # SumoPod API client
 │   └── .env.example
 │
-├── cloudflare-worker.js        # CCTV proxy worker (Cloudflare)
+├── mobile/                     # Flutter app (Android & iOS)
+│   ├── lib/
+│   │   ├── main.dart
+│   │   ├── screens/            # home, chat, prediction
+│   │   ├── providers/          # traffic, chat, route, prediction
+│   │   ├── services/           # api, chat, route, traffic
+│   │   └── widgets/
+│   └── pubspec.yaml
+│
+├── cloudflare-worker.js        # CCTV HLS proxy (Cloudflare)
 ├── ecosystem.config.js         # PM2 config
 └── README.md
 ```
@@ -227,24 +278,27 @@ REACT_APP_CCTV_PROXY=https://your-worker.workers.dev
 ## Catatan Teknis
 
 ### Kenapa Data Kendaraan Menggunakan Simulasi?
-Server CCTV pemerintah Jakarta (Dishub, ATCS) memblokir akses dari IP VPS asing. Sistem menggunakan simulasi realistis berbasis pola jam WIB untuk 49 kamera. YOLO aktif otomatis jika `stream_url` kamera diisi dengan URL yang bisa diakses dari VPS.
+Server CCTV pemerintah Jakarta (Dishub, ATCS) memblokir akses dari IP VPS asing. Sistem menggunakan simulasi realistis berbasis pola jam WIB. YOLO aktif otomatis jika `stream_url` kamera bisa diakses langsung dari VPS.
 
 ### Rekomendasi Sinyal Adaptif
-Logika sederhana namun efektif:
 
 | Kendaraan | Hijau | Merah | Prioritas |
 |---|---|---|---|
 | > 40 | 90 detik | 30 detik | TINGGI |
-| 20 – 40 | 60 detik | 45 detik | NORMAL |
+| 20–40 | 60 detik | 45 detik | NORMAL |
 | < 20 | 30 detik | 60 detik | RENDAH |
 
-Kamera jalan tol (`road_type = "toll"`) otomatis dikecualikan karena tidak memiliki lampu merah.
+Kamera `road_type = "toll"` dikecualikan otomatis — tidak ada lampu merah di tol.
 
-### `has_signal` Flag
-Diderivasi langsung dari `road_type` di backend — tidak butuh kolom DB tambahan:
-```python
-data["has_signal"] = data.get("road_type") != "toll"
-```
+### COALESCE Strategy (Two-Table Schema)
+Tabel `cctv_locations` adalah sumber kebenaran untuk koordinat dan nama kamera. Tabel `current_traffic` menyimpan data live. Query menggunakan `COALESCE(cl.lat, ct.lat)` agar data `cctv_locations` selalu menang, mencegah null crash di Leaflet.
+
+---
+
+## Kontributor
+
+- **Alfin Khoiri** — Web frontend, backend, AI/ML, deployment
+- **Hamid** — Flutter mobile app
 
 ---
 
@@ -255,4 +309,4 @@ MIT License — bebas digunakan untuk keperluan edukasi dan penelitian.
 ---
 
 *Dibuat untuk AI Open Innovation Challenge 2026 — Kategori Traffic Management*
-*President University · Alfin Khoiri · 2026*
+*President University · 2026*
