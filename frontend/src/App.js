@@ -730,12 +730,22 @@ export default function App() {
 
         // ── Step 6: Turn-by-turn steps (flatten all legs) ──────────
         const allSteps = legs.flatMap(l => l.steps ?? []);
-        setRouteSteps(allSteps.map(s => ({
+        const mappedSteps = allSteps.map(s => ({
           type:     s.maneuver.type,
           modifier: s.maneuver.modifier ?? "straight",
           name:     s.name || "",
           distance: s.distance,
-        })));
+        }));
+        setRouteSteps(mappedSteps);
+
+        // ── Voice: umumkan ringkasan rute ──────────────────────────
+        const fromName = routeNames?.from || 'titik awal';
+        const toName   = routeNames?.to   || 'tujuan';
+        const firstStep = mappedSteps[0];
+        const firstTxt  = firstStep
+          ? `. ${maneuverLabel(firstStep.type, firstStep.modifier)}${firstStep.name ? ' di ' + firstStep.name : ''}`
+          : '';
+        speak(`Rute dari ${fromName} ke ${toName}. Jarak ${cumKm.toFixed(1)} kilometer, perkiraan ${cumMin} menit${firstTxt}.`);
 
       } catch (err) {
         console.error("Routing error:", err);
@@ -762,23 +772,6 @@ export default function App() {
       .catch(() => setNextHourPrediction(null));
   
   }, [startPoint, endPoint, cctv]);
-  /* ================= VOICE: rute ================= */
-  useEffect(() => {
-    if (!eta || !routeNames) return;
-    const timer = setTimeout(() => {
-      speak(`Rute dari ${routeNames.from} ke ${routeNames.to}. Jarak ${eta.distance} kilometer, perkiraan ${eta.time} menit.`);
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [eta, routeNames]);
-
-  /* ================= VOICE: CCTV dipilih ================= */
-  useEffect(() => {
-    if (!selected) return;
-    const v = selected.vehicles || 0;
-    const label = v > 40 ? 'padat' : v > 20 ? 'ramai' : 'lancar';
-    speak(`${selected.name}. Kondisi ${label}, ${v} kendaraan terdeteksi.`);
-  }, [selected]);
-
   /* ================= CCTV DETAIL ================= */
   useEffect(() => {
     if (!selected) return;
@@ -1108,7 +1101,12 @@ export default function App() {
           const markerStatus = (dbStatus==='MERAH'||dbStatus==='PADAT') ? 'MERAH' : (dbStatus==='KUNING'||dbStatus==='RAMAI') ? 'KUNING' : undefined;
           const isHighlighted = highlighted.includes(c.id);
           return (
-            <Marker key={c.id} position={[c.lat, c.lng]} icon={c.road_type==='toll'?tollIcon(markerStatus,isHighlighted):pulseIcon(markerStatus,isHighlighted)} eventHandlers={{ click: () => { setCompareMode(null); setHighlighted([]); } }}>
+            <Marker key={c.id} position={[c.lat, c.lng]} icon={c.road_type==='toll'?tollIcon(markerStatus,isHighlighted):pulseIcon(markerStatus,isHighlighted)} eventHandlers={{ click: () => {
+              setCompareMode(null); setHighlighted([]);
+              const vv = getEffectiveVehicles(c);
+              const lbl = vv > 40 ? 'padat' : vv > 20 ? 'ramai' : 'lancar';
+              speak(`${c.name}. Kondisi ${lbl}, ${vv} kendaraan terdeteksi.`);
+            } }}>
               <Popup className="cctv-popup" maxWidth={270} minWidth={270} autoPan>
                 <MapPopup cam={c} effectiveVehicles={ev} onSelectDetail={() => { setSelected(c); setCompareMode(null); setHighlighted([]); }} />
               </Popup>
