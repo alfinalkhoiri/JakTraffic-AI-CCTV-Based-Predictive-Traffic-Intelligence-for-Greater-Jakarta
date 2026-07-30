@@ -391,7 +391,7 @@ const INCIDENT_LABELS = {
   5: "Es di Jalan", 6: "Kemacetan", 7: "Lajur Ditutup",
   8: "Jalan Ditutup", 9: "Perbaikan Jalan", 11: "Banjir", 14: "Kendaraan Mogok",
 };
-const INCIDENT_EMOJI = { 1: "🚗", 6: "🚦", 7: "🚧", 8: "⛔", 9: "🔧", 11: "🌊", 14: "🚗" };
+const INCIDENT_EMOJI = { 1: "💥", 6: "🐢", 7: "🚧", 8: "⛔", 9: "🔧", 11: "🌊", 14: "🚗" };
 
 const incidentIcon = (category) => {
   const color = [1, 8].includes(category) ? "#ef4444" : [6].includes(category) ? "#f97316" : "#f59e0b";
