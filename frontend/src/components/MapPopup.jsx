@@ -87,29 +87,41 @@ function LivePreview({ previewUrl, onStatusChange, onYoloResult }) {
     else clearInterval(intervalRef.current);
   }, [updateStatus, startAutoDetect]);
 
-  const startHls = useCallback((src, useProxy) => {
+  const startStream = useCallback((src, useProxy) => {
     const video = videoRef.current;
     if (!video || !src) { updateStatusAndDetect("offline"); return; }
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
 
-    const target = (useProxy && WORKER_URL) ? `${WORKER_URL}/?url=${encodeURIComponent(src)}` : src;
+    const proxied = (useProxy && WORKER_URL) ? `${WORKER_URL}/?url=${encodeURIComponent(src)}` : src;
 
+    // MP4 / direct video — gunakan video element langsung
+    if (src.endsWith(".mp4") || src.includes("videoclip")) {
+      video.src = proxied;
+      video.onloadedmetadata = () => { video.play().catch(() => {}); updateStatusAndDetect("live"); };
+      video.onerror = () => {
+        if (!useProxy && WORKER_URL) setAttempt(1);
+        else updateStatusAndDetect("offline");
+      };
+      return;
+    }
+
+    // HLS stream
     if (Hls.isSupported()) {
       const hls = new Hls({
-        maxBufferLength: 8,
+        maxBufferLength: 10,
         liveSyncDurationCount: 2,
         enableWorker: false,
-        manifestLoadingTimeOut: 12000,
-        manifestLoadingMaxRetry: 1,
+        manifestLoadingTimeOut: 14000,
+        manifestLoadingMaxRetry: 2,
+        fragLoadingMaxRetry: 2,
       });
       hlsRef.current = hls;
-      hls.loadSource(target);
+      hls.loadSource(proxied);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); updateStatusAndDetect("live"); });
       hls.on(Hls.Events.ERROR, (_, d) => {
         if (d.fatal) {
-          hls.destroy();
-          hlsRef.current = null;
+          hls.destroy(); hlsRef.current = null;
           if (!useProxy && WORKER_URL) setAttempt(1);
           else updateStatusAndDetect("offline");
         }
@@ -126,63 +138,66 @@ function LivePreview({ previewUrl, onStatusChange, onYoloResult }) {
   useEffect(() => {
     if (!previewUrl) { updateStatusAndDetect("offline"); return; }
     updateStatus("loading");
-    startHls(previewUrl, attempt === 1);
+    startStream(previewUrl, attempt === 1);
     return () => {
       if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
       clearInterval(intervalRef.current);
+      const v = videoRef.current;
+      if (v) { v.src = ""; v.load(); }
     };
-  }, [previewUrl, attempt, startHls, updateStatus, updateStatusAndDetect]);
+  }, [previewUrl, attempt, startStream, updateStatus, updateStatusAndDetect]);
 
   const retry = () => { setAttempt(0); updateStatus("loading"); };
 
   return (
-    <div style={{ position: "relative", height: 155, background: "#0f172a", overflow: "hidden" }}>
+    <div style={{ position: "relative", height: 155, background: "linear-gradient(135deg,#0c1a2e 0%,#0f172a 100%)", overflow: "hidden" }}>
+      {/* Grid pattern background */}
+      <div style={{ position:"absolute", inset:0, backgroundImage:"linear-gradient(rgba(56,189,248,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(56,189,248,.04) 1px,transparent 1px)", backgroundSize:"20px 20px", pointerEvents:"none" }} />
+
       <video
         ref={videoRef}
         muted playsInline autoPlay
         crossOrigin="anonymous"
-        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", opacity: (status === "live" && !yoloImage) ? 1 : 0, transition: "opacity .4s" }}
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", opacity: (status === "live" && !yoloImage) ? 1 : 0, transition: "opacity .5s" }}
       />
-      {/* Annotated YOLO image overlay — tampil setelah deteksi */}
       {status === "live" && yoloImage && (
-        <img
-          src={`data:image/jpeg;base64,${yoloImage}`}
-          alt="YOLO"
-          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
-        />
+        <img src={`data:image/jpeg;base64,${yoloImage}`} alt="YOLO"
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
       )}
-      {/* Canvas tersembunyi untuk capture frame YOLO */}
       <canvas ref={canvasRef} style={{ display: "none" }} />
 
-      {status !== "live" && (
-        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, padding: "0 16px" }}>
-          <div style={{ fontSize: 32, opacity: 0.2 }}>📡</div>
-          {status === "loading" ? (
-            <>
-              <p style={{ fontSize: 11, color: "#475569", margin: 0 }}>
-                {attempt === 1 ? "Mencoba via proxy..." : "Menghubungkan ke stream..."}
-              </p>
-              <div style={{ display: "flex", gap: 4 }}>
-                {[0,1,2].map(i => (
-                  <span key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#3b82f6", animation: `bounce 1s ${i*0.15}s infinite` }} />
-                ))}
-              </div>
-            </>
-          ) : (
-            <>
-              <p style={{ fontSize: 11, color: "#475569", margin: 0, textAlign: "center" }}>Stream tidak terjangkau</p>
-              <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={retry} style={{ fontSize: 10, color: "#94a3b8", background: "#1e293b", border: "1px solid #334155", borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}>
-                  ↺ Retry
-                </button>
-                {previewUrl && (
-                  <a href={previewUrl} target="_blank" rel="noopener noreferrer"
-                    style={{ fontSize: 10, color: "#94a3b8", background: "#1e293b", border: "1px solid #334155", borderRadius: 6, padding: "3px 8px", textDecoration: "none" }}>
-                    ↗ Buka di Tab Baru
-                  </a>
-                )}
-              </div>
-            </>
+      {status === "loading" && (
+        <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:10 }}>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="1.5" strokeLinecap="round" opacity=".5">
+            <path d="M15 10l4.553-2.069A1 1 0 0121 8.87V15.13a1 1 0 01-1.447.899L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/>
+          </svg>
+          <p style={{ fontSize:10, color:"#334155", margin:0 }}>{attempt === 1 ? "Mencoba via proxy…" : "Menghubungkan…"}</p>
+          <div style={{ display:"flex", gap:4 }}>
+            {[0,1,2].map(i => <span key={i} style={{ width:5, height:5, borderRadius:"50%", background:"#38bdf8", animation:`bounce .9s ${i*.18}s infinite` }} />)}
+          </div>
+        </div>
+      )}
+
+      {status === "offline" && (
+        <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8 }}>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#334155" strokeWidth="1.2" strokeLinecap="round">
+            <path d="M15 10l4.553-2.069A1 1 0 0121 8.87V15.13a1 1 0 01-1.447.899L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/>
+            <line x1="3" y1="3" x2="21" y2="21" stroke="#475569" strokeWidth="1.2"/>
+          </svg>
+          <p style={{ fontSize:10, color:"#475569", margin:0 }}>
+            {previewUrl ? "Stream tidak dapat dijangkau" : "Kamera belum dikonfigurasi"}
+          </p>
+          {previewUrl && (
+            <div style={{ display:"flex", gap:5 }}>
+              <button onClick={retry}
+                style={{ fontSize:9, color:"#64748b", background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.1)", borderRadius:5, padding:"3px 9px", cursor:"pointer" }}>
+                ↺ Coba Lagi
+              </button>
+              <a href={previewUrl} target="_blank" rel="noopener noreferrer"
+                style={{ fontSize:9, color:"#64748b", background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.1)", borderRadius:5, padding:"3px 9px", textDecoration:"none" }}>
+                ↗ Tab Baru
+              </a>
+            </div>
           )}
         </div>
       )}
