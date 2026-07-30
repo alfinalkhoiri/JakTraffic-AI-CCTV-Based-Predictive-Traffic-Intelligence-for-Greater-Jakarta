@@ -416,6 +416,26 @@ const endIcon = L.divIcon({
 });
 
 
+/* ─── GPS User Position Icon ─────────────────────────────────────────────── */
+const gpsUserIcon = L.divIcon({
+  className: "",
+  html: `<div style="position:relative;width:22px;height:22px;">
+    <div style="position:absolute;inset:0;border-radius:50%;background:rgba(56,189,248,.22);animation:cctvPulse 2s ease-out infinite;"></div>
+    <div style="position:absolute;inset:4px;border-radius:50%;background:#38bdf8;border:3px solid white;box-shadow:0 0 14px rgba(56,189,248,.9);"></div>
+  </div>`,
+  iconSize: [22, 22], iconAnchor: [11, 11],
+});
+
+/* ─── Leaflet: Follow GPS saat mode berkendara ───────────────────────────── */
+function GPSFollowHandler({ position, active }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!active || !position) return;
+    map.setView([position.lat, position.lng], 17, { animate: true, duration: 0.6 });
+  }, [position, active, map]);
+  return null;
+}
+
 const etaBadgeIcon = (minutes, km, isDestination = false) => L.divIcon({
   className: "",
   html: `<div style="
@@ -562,8 +582,17 @@ export default function App() {
   const [dynamicFloodRisk, setDynamicFloodRisk] = useState({}); // zone.name → elevated risk
   const dynamicFloodRiskRef = useRef({});  // ref agar fetchRoute dapat nilai terbaru
   useEffect(() => { dynamicFloodRiskRef.current = dynamicFloodRisk; }, [dynamicFloodRisk]);
-  const [showTripSummary, setShowTripSummary] = useState(false); // modal ringkasan
+  const [showTripSummary, setShowTripSummary] = useState(false);
   const [tripSummaryData, setTripSummaryData] = useState(null);
+
+  // ── Mode Berkendara ──────────────────────────────────────────────────────
+  const [drivingMode, setDrivingMode]       = useState(false);
+  const [currentStepIdx, setCurrentStepIdx] = useState(0);
+  const [userGPS, setUserGPS]               = useState(null);
+  const [userSpeedKmh, setUserSpeedKmh]     = useState(null);
+  const gpsWatchRef      = useRef(null);
+  const currentStepRef   = useRef(0);   // ref agar GPS callback dapat nilai terbaru
+  const routeStepsRef2   = useRef([]);  // ref salinan routeSteps untuk GPS callback
   const routeCoordsRef                    = useRef([]);
   const [routeCameras, setRouteCameras]   = useState([]); // CCTV along active route
 
@@ -638,6 +667,63 @@ export default function App() {
         : doSpeak();
     });
   }, [routeSteps]);
+
+  /* ── Mode Berkendara ─────────────────────────────────────────── */
+  const startDrivingMode = useCallback(() => {
+    if (!routeSteps.length) return;
+    setDrivingMode(true);
+    setCurrentStepIdx(0);
+    currentStepRef.current  = 0;
+    routeStepsRef2.current  = routeSteps;
+    speak('Mode berkendara aktif. Petunjuk arah akan dibacakan otomatis.');
+
+    if (!('geolocation' in navigator)) return;
+    const id = navigator.geolocation.watchPosition(
+      ({ coords }) => {
+        const { latitude, longitude, speed } = coords;
+        setUserGPS({ lat: latitude, lng: longitude });
+        setUserSpeedKmh(speed != null ? Math.round(speed * 3.6) : null);
+
+        // Auto-advance: cek jarak ke langkah berikutnya
+        const steps  = routeStepsRef2.current;
+        const idx    = currentStepRef.current;
+        const target = steps[idx + 1]; // menuju titik maneuver berikutnya
+        if (target?.lat && target?.lng) {
+          const dist = haversineDistance(latitude, longitude, target.lat, target.lng);
+          if (dist < 60) {
+            const newIdx = idx + 1;
+            currentStepRef.current = newIdx;
+            setCurrentStepIdx(newIdx);
+            const distTxt = target.distance > 0 ? ` dalam ${fmtDist(target.distance)}` : '';
+            speak(`${maneuverLabel(target.type, target.modifier)}${target.name ? ' di ' + target.name : ''}${distTxt}.`);
+          }
+        }
+        // Umumkan langkah 200m sebelum (peringatan dini)
+        if (target?.lat && target?.lng) {
+          const dist = haversineDistance(latitude, longitude, target.lat, target.lng);
+          if (dist < 220 && dist > 60) {
+            speak(`Dalam ${Math.round(dist)} meter: ${maneuverLabel(target.type, target.modifier)}.`, false);
+          }
+        }
+      },
+      (err) => console.warn('[GPS]', err.message),
+      { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
+    );
+    gpsWatchRef.current = id;
+  }, [routeSteps, speak]);
+
+  const stopDrivingMode = useCallback(() => {
+    setDrivingMode(false);
+    if (gpsWatchRef.current != null) {
+      navigator.geolocation.clearWatch(gpsWatchRef.current);
+      gpsWatchRef.current = null;
+    }
+    setUserGPS(null); setUserSpeedKmh(null);
+    window.speechSynthesis?.cancel();
+  }, []);
+
+  // Hentikan driving mode jika rute dibatalkan
+  useEffect(() => { if (!routeSteps.length) stopDrivingMode(); }, [routeSteps]);
 
   const toggleNotif = useCallback(async () => {
     if (notifEnabled) { setNotifEnabled(false); return; }
@@ -965,6 +1051,8 @@ export default function App() {
         const mappedSteps = allSteps.map(s => ({
           type: s.maneuver.type, modifier: s.maneuver.modifier ?? "straight",
           name: s.name || "", distance: s.distance,
+          lat: s.maneuver.location?.[1], // koordinat untuk GPS auto-advance
+          lng: s.maneuver.location?.[0],
         }));
 
         // Update primary route dengan full data
@@ -1432,6 +1520,7 @@ export default function App() {
         <MapClickHandler onPick={handleMapPick} />
         <FlyToHandler target={mapFlyTo} />
         <FitBoundsHandler segments={routeSegments} />
+        <GPSFollowHandler position={userGPS} active={drivingMode} />
 
         {/* Overlay zona rawan banjir (warna dinamis berdasarkan cuaca + TomTom) */}
         {showFlood && FLOOD_ZONES.map((z, i) => {
@@ -1482,7 +1571,7 @@ export default function App() {
           <Marker key={`eta-${wp.cctv_id}`} position={[wp.lat, wp.lng]} icon={etaBadgeIcon(wp.segment_min, wp.segment_km, wp.isDestination)} interactive={false} />
         ))}
 
-        {tomtomIncidents.filter(inc => inc.lat != null && inc.lng != null).map((inc, i) => (
+        {!drivingMode && tomtomIncidents.filter(inc => inc.lat != null && inc.lng != null).map((inc, i) => (
           <Marker key={`inc-${i}`} position={[inc.lat, inc.lng]} icon={incidentIcon(inc.category)} zIndexOffset={500}>
             <Popup>
               <div style={{ color:'#0f172a', fontSize:12, maxWidth:200, lineHeight:1.4 }}>
@@ -1494,11 +1583,16 @@ export default function App() {
           </Marker>
         ))}
 
-        {filteredCctv.map(c => {
+        {!drivingMode && filteredCctv.map(c => {
           const ev = getEffectiveVehicles(c);
           const color = ev > 30 ? '#ef4444' : ev > 15 ? '#f97316' : '#22c55e';
           return <Circle key={`zone-${c.id}`} center={[c.lat, c.lng]} radius={c.road_type==='toll'?200:400} pathOptions={{ color, fillColor:color, fillOpacity:.07, weight:1, opacity:.2 }} />;
         })}
+
+        {/* Posisi GPS user (mode berkendara) */}
+        {drivingMode && userGPS && (
+          <Marker position={[userGPS.lat, userGPS.lng]} icon={gpsUserIcon} zIndexOffset={2000} interactive={false} />
+        )}
 
         {/* Ring aktif kamera sepanjang rute — rendered di atas zone circles */}
         {routeCameras.map(cam => (
@@ -1506,7 +1600,7 @@ export default function App() {
             pathOptions={{ color:'#22d3ee', fillColor:'#22d3ee', fillOpacity:.08, weight:2.5, opacity:1, dashArray:'9 5' }} interactive={false} />
         ))}
 
-        {filteredCctv.map(c => {
+        {!drivingMode && filteredCctv.map(c => {
           const ev = getEffectiveVehicles(c);
           const dbStatus = (c.status||'').toUpperCase();
           const markerStatus = (dbStatus==='MERAH'||dbStatus==='PADAT') ? 'MERAH' : (dbStatus==='KUNING'||dbStatus==='RAMAI') ? 'KUNING' : undefined;
@@ -1959,6 +2053,24 @@ export default function App() {
                 </div>
               )}
 
+              {/* Tombol Mode Berkendara */}
+              {routeSteps.length > 0 && !drivingMode && (
+                <button
+                  onClick={startDrivingMode}
+                  style={{ width:'100%', background:'linear-gradient(135deg,#0ea5e9,#0284c7)', border:'none', borderRadius:10, padding:'12px 0', fontSize:13, fontWeight:800, color:'white', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:8, boxShadow:'0 4px 16px rgba(14,165,233,.35)' }}
+                >
+                  <span style={{ fontSize:18 }}>🚗</span> Mulai Mode Berkendara
+                </button>
+              )}
+              {drivingMode && (
+                <button
+                  onClick={stopDrivingMode}
+                  style={{ width:'100%', background:'rgba(239,68,68,.15)', border:'1px solid rgba(239,68,68,.3)', borderRadius:10, padding:'10px 0', fontSize:12, fontWeight:700, color:'#f87171', cursor:'pointer' }}
+                >
+                  ✕ Keluar Mode Berkendara
+                </button>
+              )}
+
               {/* Turn-by-turn */}
               {routeSteps.length > 0 && (
                 <div style={S.card}>
@@ -2160,6 +2272,123 @@ export default function App() {
         @media (min-width:768px) { button.md\\:hidden { display:none !important; } aside { display:flex !important; } }
       `}</style>
     </div>
+    {/* ══ DRIVING MODE OVERLAY ══════════════════════════════════════════ */}
+    {drivingMode && routeSteps.length > 0 && (() => {
+      const step     = routeSteps[currentStepIdx];
+      const nextStep = routeSteps[currentStepIdx + 1];
+      const pct      = Math.round(((currentStepIdx + 1) / routeSteps.length) * 100);
+      return (
+        <div style={{ position:'fixed', inset:0, zIndex:9990, pointerEvents:'none', display:'flex', flexDirection:'column', fontFamily:'system-ui,sans-serif' }}>
+
+          {/* ── TOP: Current instruction ── */}
+          <div style={{ pointerEvents:'all', background:'rgba(2,11,24,.97)', backdropFilter:'blur(24px)', borderBottom:'1px solid rgba(56,189,248,.18)', padding:'14px 18px 12px', flexShrink:0 }}>
+            {/* Exit + progress */}
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+              <button onClick={stopDrivingMode}
+                style={{ background:'rgba(244,63,94,.12)', border:'1px solid rgba(244,63,94,.25)', borderRadius:7, padding:'5px 12px', fontSize:11, color:'#f87171', fontWeight:700, cursor:'pointer' }}>
+                ✕ Keluar
+              </button>
+              <div style={{ flex:1, margin:'0 12px', height:4, background:'rgba(255,255,255,.07)', borderRadius:2 }}>
+                <div style={{ width:`${pct}%`, height:'100%', background:'#38bdf8', borderRadius:2, transition:'width .5s' }} />
+              </div>
+              <span style={{ fontSize:10, color:'#475569', fontWeight:700, minWidth:50, textAlign:'right' }}>
+                {currentStepIdx + 1}/{routeSteps.length}
+              </span>
+            </div>
+
+            {/* Current step */}
+            <div style={{ display:'flex', alignItems:'center', gap:14 }}>
+              <div style={{ width:60, height:60, borderRadius:14, background:'rgba(56,189,248,.12)', border:'1px solid rgba(56,189,248,.2)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:32, flexShrink:0 }}>
+                {maneuverIcon(step?.type, step?.modifier)}
+              </div>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:20, fontWeight:900, color:'#f0f9ff', lineHeight:1.2 }}>
+                  {maneuverLabel(step?.type, step?.modifier)}
+                </div>
+                {step?.name && <div style={{ fontSize:12, color:'#64748b', marginTop:3 }}>{step.name}</div>}
+                {step?.distance > 0 && (
+                  <div style={{ fontSize:20, fontWeight:800, color:'#38bdf8', marginTop:5, fontVariantNumeric:'tabular-nums' }}>
+                    {fmtDist(step.distance)}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Next step preview */}
+            {nextStep && (
+              <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:10, padding:'8px 12px', background:'rgba(255,255,255,.04)', borderRadius:8, border:'1px solid rgba(255,255,255,.06)' }}>
+                <span style={{ fontSize:14, flexShrink:0 }}>{maneuverIcon(nextStep.type, nextStep.modifier)}</span>
+                <span style={{ fontSize:11, color:'#64748b', flex:1 }}>
+                  Lalu: <b style={{ color:'#94a3b8' }}>{maneuverLabel(nextStep.type, nextStep.modifier)}</b>{nextStep.name ? ` di ${nextStep.name}` : ''}
+                </span>
+                {nextStep.distance > 0 && <span style={{ fontSize:10, color:'#475569', flexShrink:0 }}>{fmtDist(nextStep.distance)}</span>}
+              </div>
+            )}
+          </div>
+
+          {/* ── MAP SPACER (peta terlihat di sini) ── */}
+          <div style={{ flex:1 }} />
+
+          {/* ── BOTTOM: HUD ── */}
+          <div style={{ pointerEvents:'all', background:'rgba(2,11,24,.97)', backdropFilter:'blur(24px)', borderTop:'1px solid rgba(56,189,248,.18)', padding:'14px 18px' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:14, marginBottom:12 }}>
+              {/* Speed */}
+              <div style={{ textAlign:'center', minWidth:72, flexShrink:0 }}>
+                <div style={{ fontSize:8, color:'#475569', fontWeight:700, letterSpacing:1, marginBottom:2 }}>KM/JAM</div>
+                <div style={{ fontSize:36, fontWeight:900, lineHeight:1, fontVariantNumeric:'tabular-nums', color: userSpeedKmh != null ? (userSpeedKmh > 80 ? '#f43f5e' : userSpeedKmh > 60 ? '#f59e0b' : '#f0f9ff') : '#334155' }}>
+                  {userSpeedKmh ?? '--'}
+                </div>
+                {userSpeedKmh == null && <div style={{ fontSize:8, color:'#334155' }}>GPS aktif</div>}
+              </div>
+              <div style={{ width:1, height:44, background:'rgba(255,255,255,.07)', flexShrink:0 }} />
+              {/* ETA */}
+              <div style={{ textAlign:'center', flex:1 }}>
+                <div style={{ fontSize:8, color:'#475569', fontWeight:700, letterSpacing:1, marginBottom:2 }}>TIBA DALAM</div>
+                <div style={{ fontSize:30, fontWeight:900, color:'#38bdf8', lineHeight:1, fontVariantNumeric:'tabular-nums' }}>
+                  {eta?.time} <span style={{ fontSize:11, color:'#64748b', fontWeight:400 }}>mnt</span>
+                </div>
+                <div style={{ fontSize:9, color:'#475569', marginTop:2 }}>{eta?.distance} km</div>
+              </div>
+              <div style={{ width:1, height:44, background:'rgba(255,255,255,.07)', flexShrink:0 }} />
+              {/* GPS status */}
+              <div style={{ textAlign:'center', minWidth:60, flexShrink:0 }}>
+                <div style={{ fontSize:8, color:'#475569', fontWeight:700, letterSpacing:1, marginBottom:2 }}>GPS</div>
+                <div style={{ fontSize:16, lineHeight:1 }}>
+                  {userGPS ? '🛰️' : '📡'}
+                </div>
+                <div style={{ fontSize:8, color: userGPS ? '#22c55e' : '#f59e0b', fontWeight:700, marginTop:2 }}>
+                  {userGPS ? 'AKTIF' : 'CARI'}
+                </div>
+              </div>
+            </div>
+
+            {/* Manual step navigation */}
+            <div style={{ display:'flex', gap:8 }}>
+              <button
+                onClick={() => { const i = Math.max(0, currentStepIdx-1); setCurrentStepIdx(i); currentStepRef.current = i; }}
+                disabled={currentStepIdx === 0}
+                style={{ flex:1, padding:'9px 0', background:'rgba(255,255,255,.05)', border:'1px solid rgba(255,255,255,.09)', borderRadius:8, color: currentStepIdx === 0 ? '#334155' : '#94a3b8', fontSize:12, cursor: currentStepIdx === 0 ? 'default' : 'pointer' }}
+              >
+                ← Kembali
+              </button>
+              <button
+                onClick={() => {
+                  const i = Math.min(routeSteps.length-1, currentStepIdx+1);
+                  setCurrentStepIdx(i); currentStepRef.current = i;
+                  const ns = routeSteps[i];
+                  if (ns) speak(`${maneuverLabel(ns.type, ns.modifier)}${ns.name ? ' di ' + ns.name : ''}.`);
+                }}
+                disabled={currentStepIdx >= routeSteps.length - 1}
+                style={{ flex:2, padding:'9px 0', background: currentStepIdx >= routeSteps.length-1 ? 'rgba(255,255,255,.03)' : 'rgba(56,189,248,.14)', border:`1px solid ${currentStepIdx >= routeSteps.length-1 ? 'rgba(255,255,255,.06)' : 'rgba(56,189,248,.3)'}`, borderRadius:8, color: currentStepIdx >= routeSteps.length-1 ? '#334155' : '#38bdf8', fontSize:12, fontWeight:700, cursor: currentStepIdx >= routeSteps.length-1 ? 'default' : 'pointer' }}
+              >
+                Langkah Berikut →
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    })()}
+
     {/* ══ TRIP SUMMARY MODAL ═════════════════════════════════════════════ */}
     {showTripSummary && tripSummaryData && (
       <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.75)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
