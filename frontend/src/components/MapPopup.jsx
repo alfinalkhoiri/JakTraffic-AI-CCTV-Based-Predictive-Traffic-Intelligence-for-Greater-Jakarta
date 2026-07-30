@@ -221,7 +221,7 @@ function resolveStatus(camStatus, vehicles) {
   return              { label: "LANCAR", color: "#22c55e" };
 }
 
-export default function MapPopup({ cam, effectiveVehicles, onSelectDetail }) {
+export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showSignalRec = false }) {
   // "loading" → belum tahu, "live" → stream berhasil, "offline" → gagal
   const [streamStatus, setStreamStatus] = useState("loading");
   const [yoloLiveCount, setYoloLiveCount] = useState(null);
@@ -265,8 +265,8 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail }) {
         )}
         <p style={{ fontSize: 14, fontWeight: 700, color: "white", margin: "0 0 8px", lineHeight: 1.3 }}>{cam.name}</p>
 
-        {/* Signal recommendation — hanya untuk jalan dengan lampu merah */}
-        {cam.has_signal ? (
+        {/* Signal recommendation — hanya tampil untuk operator (showSignalRec=true) */}
+        {showSignalRec && (cam.has_signal ? (
           <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#0f172a", borderRadius: 8, padding: "7px 10px" }}>
             <MiniLight active={rec.light} />
             <div style={{ flex: 1, minWidth: 0 }}>
@@ -282,7 +282,7 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail }) {
             <span style={{ fontSize: 14 }}>🛣️</span>
             <p style={{ fontSize: 10, color: "#64748b", margin: 0 }}>Jalan tol — tidak ada lampu merah</p>
           </div>
-        )}
+        ))}
 
         {/* Detail button */}
         <button

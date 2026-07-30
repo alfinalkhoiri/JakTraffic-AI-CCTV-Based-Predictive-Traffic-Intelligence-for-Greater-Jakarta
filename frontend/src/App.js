@@ -498,8 +498,6 @@ export default function App() {
   // Overlay banjir
   const [showFlood, setShowFlood]         = useState(false);
 
-  // Toggle rekomendasi sinyal di panel user (default off — fitur operator)
-  const [showSignal, setShowSignal]       = useState(false);
 
   // Estimasi tarif tol
   const [tollEstimate, setTollEstimate]   = useState(null); // { corridors, total }
@@ -1536,45 +1534,6 @@ export default function App() {
                 })()}
               </div>
 
-              {/* Sinyal Rekomendasi — toggle (default off, fitur operator) */}
-              <button
-                onClick={() => setShowSignal(v => !v)}
-                style={{ display:'flex', alignItems:'center', justifyContent:'space-between', width:'100%', background: showSignal ? 'rgba(34,197,94,.07)' : 'rgba(255,255,255,.03)', border:`1px solid ${showSignal ? 'rgba(34,197,94,.25)' : 'rgba(255,255,255,.07)'}`, borderRadius:10, padding:'9px 12px', cursor:'pointer', marginBottom: showSignal ? 0 : 'inherit', transition:'all .15s' }}
-              >
-                <div style={{ display:'flex', alignItems:'center', gap:7 }}>
-                  <span style={{ fontSize:14 }}>🚦</span>
-                  <span style={{ fontSize:11, fontWeight:700, color: showSignal ? '#22c55e' : '#64748b' }}>Rekomendasi Sinyal</span>
-                </div>
-                <span style={{ fontSize:10, color:'#475569', fontWeight:700 }}>{showSignal ? '▲ Sembunyikan' : '▼ Tampilkan'}</span>
-              </button>
-              {showSignal && (selected.has_signal ? (() => {
-                const rec = getSignalRec(selected.vehicles);
-                return (
-                  <div style={{ ...S.card, borderColor: rec.dot + '40', borderTopLeftRadius:0, borderTopRightRadius:0, marginTop:-1 }}>
-                    <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                      <div style={{ background:'#0f172a', border:'2px solid #1e293b', borderRadius:8, padding:'7px 9px', display:'flex', flexDirection:'column', gap:5, alignItems:'center', flexShrink:0 }}>
-                        {['red','yellow','green'].map(k => <div key={k} style={{ width:11, height:11, borderRadius:'50%', background: k===rec.light ? {red:'#ef4444',yellow:'#f59e0b',green:'#22c55e'}[k] : '#1e293b', boxShadow: k===rec.light ? `0 0 7px ${{red:'#ef4444',yellow:'#f59e0b',green:'#22c55e'}[k]}` : 'none', border:`1.5px solid ${k===rec.light?{red:'#ef4444',yellow:'#f59e0b',green:'#22c55e'}[k]:'#374151'}` }} />)}
-                      </div>
-                      <div style={{ flex:1 }}>
-                        <div style={{ fontSize:12, fontWeight:800, color:rec.dot }}>{rec.label}</div>
-                        <div style={{ fontSize:10, color:'#64748b', marginTop:2 }}>{rec.note}</div>
-                        <div style={{ display:'flex', gap:10, marginTop:6 }}>
-                          <span style={{ fontSize:10, color:'#22c55e', fontWeight:700 }}>🟢 Hijau {rec.green}s</span>
-                          <span style={{ fontSize:10, color:'#ef4444', fontWeight:700 }}>🔴 Merah {rec.red}s</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })() : (
-                <div style={{ ...S.card, display:'flex', alignItems:'center', gap:10, borderTopLeftRadius:0, borderTopRightRadius:0, marginTop:-1 }}>
-                  <span style={{ fontSize:20 }}>🛣️</span>
-                  <div>
-                    <div style={{ fontSize:12, fontWeight:700, color:'#64748b' }}>Jalan Tol</div>
-                    <div style={{ fontSize:10, color:'#475569', marginTop:2 }}>Tidak ada lampu merah di ruas ini</div>
-                  </div>
-                </div>
-              ))}
 
               {/* TomTom Flow */}
               {tomtomFlow?.currentSpeed > 0 && (() => {
