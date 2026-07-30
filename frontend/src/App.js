@@ -56,11 +56,31 @@ const FLOOD_RISK_COLOR = { HIGH: '#ef4444', MEDIUM: '#f97316', LOW: '#eab308' };
 const FLOOD_RISK_LABEL = { HIGH: 'Risiko Tinggi', MEDIUM: 'Risiko Sedang', LOW: 'Risiko Rendah' };
 
 /* ─── Koridor Tol & Tarif (Golongan I — sedan/jeep) ─────────────────────── */
+/* ─── Koridor Tol & Tarif Resmi (Golongan I) ─────────────────────────────── */
 const TOLL_CORRIDORS = [
-  { id: 'kg-pg',   name: 'Tol KG–PG',           camIds: [29,30,31,32,33,34], price: 9000  },
-  { id: 'bckm-1',  name: 'Tol BCKM — Cawang',   camIds: [35],               price: 4500  },
-  { id: 'bckm-2',  name: 'Tol BCKM — Bks Barat', camIds: [36,37],           price: 7000  },
-  { id: 'bks-tmr', name: 'Tol Bekasi Timur',      camIds: [43],               price: 5000  },
+  { id:'kg-pg',      name:'Tol KG–PG',           camIds:[29,30,31,32,33,34],                                          price:9000  },
+  { id:'bckm-caw',   name:'Tol BCKM — Cawang',   camIds:[35],                                                        price:4500  },
+  { id:'bckm-bks',   name:'Tol BCKM — Bks Barat',camIds:[36,37],                                                    price:7000  },
+  { id:'bckm-seg',   name:'Tol BCKM Segmen',      camIds:[65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80],          price:6000  },
+  { id:'bks-tmr',    name:'Tol Bekasi Timur',      camIds:[43],                                                        price:4500  },
+  { id:'jorr-w2',    name:'Tol JORR W2',           camIds:[51,52,53,54,55,56,57,58,59,60,61,62,63,64],                price:8500  },
+  { id:'jorr-e1',    name:'Tol JORR E1',           camIds:[81,82,83,84,85,86],                                         price:9500  },
+  { id:'jorr-sel',   name:'Tol JORR Selatan',      camIds:[89,90,91,92,93,94,95,96,97,98,99,100],                     price:12000 },
+  { id:'dalam-kota', name:'Tol Dalam Kota',        camIds:[87,88],                                                     price:9500  },
+];
+
+/* ─── Jenis Kendaraan & Konsumsi BBM (L/100km) ───────────────────────────── */
+const VEHICLE_TYPES = [
+  { id:'motor', label:'🏍️ Motor',   consumption:4,  tollFactor:0.5 },
+  { id:'sedan', label:'🚗 Mobil',   consumption:11, tollFactor:1.0 },
+  { id:'suv',   label:'🚙 SUV/MPV', consumption:14, tollFactor:1.0 },
+  { id:'bus',   label:'🚌 Bus',     consumption:22, tollFactor:2.0 },
+  { id:'truck', label:'🚚 Truk',    consumption:28, tollFactor:2.5 },
+];
+const FUEL_TYPES = [
+  { id:'pertalite', label:'Pertalite', price:10000 },
+  { id:'pertamax',  label:'Pertamax',  price:13700 },
+  { id:'solar',     label:'Solar',     price:6800  },
 ];
 
 /* =============== Helper 1 Jam Predik ================= */
@@ -501,8 +521,13 @@ export default function App() {
   const [showFlood, setShowFlood]         = useState(false);
 
 
-  // Estimasi tarif tol
+  // Estimasi tarif tol + BBM + kendaraan
   const [tollEstimate, setTollEstimate]   = useState(null); // { corridors, total }
+  const [fuelEstimate, setFuelEstimate]   = useState(null); // { liters, cost, fuelLabel }
+  const [vehicleType, setVehicleType]     = useState('sedan');
+  const [fuelType, setFuelType]           = useState('pertalite');
+  const routeCoordsRef                    = useRef([]);
+  const [routeCameras, setRouteCameras]   = useState([]); // CCTV along active route
 
   // WebSocket
   const [wsConnected, setWsConnected]     = useState(false);
@@ -703,7 +728,7 @@ export default function App() {
       setRouteNames(null);
       setRouteSteps([]);
       setWaypointETAs([]);
-      setAltRoutes([]); setActiveRouteIdx(0); setTollEstimate(null);
+      setAltRoutes([]); setActiveRouteIdx(0); setTollEstimate(null); setFuelEstimate(null); setRouteCameras([]); routeCoordsRef.current = [];
     }
   };
 
@@ -871,7 +896,17 @@ export default function App() {
         // Update primary route dengan full data
         processedAlts[0] = { ...processedAlts[0], segments: fullSegments, eta: { time: cumMin, distance: cumKm.toFixed(1) }, steps: mappedSteps };
 
-        // ── Estimasi tarif tol ───────────────────────────────────────────────
+        // ── Simpan coords untuk rekalkulasi saat vehicle/fuel berubah ────────
+        routeCoordsRef.current = coords;
+
+        // ── Kamera CCTV sepanjang rute (radius 400m) ──────────────────────
+        const routeCams = filteredCctv.filter(cam =>
+          coords.some(([lat, lng]) => haversineDistance(lat, lng, cam.lat, cam.lng) < 400)
+        );
+        setRouteCameras(routeCams);
+
+        // ── Estimasi tarif tol + faktor kendaraan ─────────────────────────
+        const veh0 = VEHICLE_TYPES.find(v => v.id === vehicleType) || VEHICLE_TYPES[1];
         const tolledCors = TOLL_CORRIDORS.filter(tc =>
           tc.camIds.some(cid => {
             const cam = cctv.find(c => c.id === cid);
@@ -879,10 +914,13 @@ export default function App() {
             return coords.some(([lat, lng]) => haversineDistance(lat, lng, cam.lat, cam.lng) < 700);
           })
         );
-        setTollEstimate(tolledCors.length
-          ? { corridors: tolledCors, total: tolledCors.reduce((s, t) => s + t.price, 0) }
-          : null
-        );
+        const tollTotal = Math.round(tolledCors.reduce((s, t) => s + t.price, 0) * veh0.tollFactor);
+        setTollEstimate(tolledCors.length ? { corridors: tolledCors, total: tollTotal } : null);
+
+        // ── Estimasi konsumsi BBM ──────────────────────────────────────────
+        const fuel0 = FUEL_TYPES.find(f => f.id === fuelType) || FUEL_TYPES[0];
+        const fuelLiters0 = Math.round((cumKm * veh0.consumption / 100) * 10) / 10;
+        setFuelEstimate({ liters: fuelLiters0, cost: Math.round(fuelLiters0 * fuel0.price), fuelLabel: fuel0.label });
 
         setAltRoutes(processedAlts);
         setActiveRouteIdx(0);
@@ -960,6 +998,28 @@ export default function App() {
       }
     });
   }, [tomtomIncidents, notifEnabled, routeSegments]);
+
+  /* ================= REKALKULASI Tول + BBM SAAT KENDARAAN/BBM BERUBAH ================= */
+  useEffect(() => {
+    const coords = routeCoordsRef.current;
+    if (!coords.length || !eta) return;
+    const veh  = VEHICLE_TYPES.find(v => v.id === vehicleType) || VEHICLE_TYPES[1];
+    const fuel = FUEL_TYPES.find(f => f.id === fuelType) || FUEL_TYPES[0];
+    // Toll
+    const tolledCors = TOLL_CORRIDORS.filter(tc =>
+      tc.camIds.some(cid => {
+        const cam = cctv.find(c => c.id === cid);
+        if (!cam?.lat || !cam?.lng) return false;
+        return coords.some(([lat, lng]) => haversineDistance(lat, lng, cam.lat, cam.lng) < 700);
+      })
+    );
+    const tollTotal = Math.round(tolledCors.reduce((s, t) => s + t.price, 0) * veh.tollFactor);
+    setTollEstimate(tolledCors.length ? { corridors: tolledCors, total: tollTotal } : null);
+    // BBM
+    const dist = parseFloat(eta.distance);
+    const liters = Math.round((dist * veh.consumption / 100) * 10) / 10;
+    setFuelEstimate({ liters, cost: Math.round(liters * fuel.price), fuelLabel: fuel.label });
+  }, [vehicleType, fuelType, eta, cctv]);
 
   /* ================= CCTV DETAIL ================= */
   useEffect(() => {
@@ -1315,6 +1375,12 @@ export default function App() {
           </Marker>
         ))}
 
+        {/* Ring aktif kamera sepanjang rute */}
+        {routeCameras.map(cam => (
+          <Circle key={`rcam-${cam.id}`} center={[cam.lat, cam.lng]} radius={420}
+            pathOptions={{ color:'#38bdf8', fillColor:'#38bdf8', fillOpacity:.06, weight:2, opacity:.7, dashArray:'5 4' }} interactive={false} />
+        ))}
+
         {filteredCctv.map(c => {
           const ev = getEffectiveVehicles(c);
           const color = ev > 30 ? '#ef4444' : ev > 15 ? '#f97316' : '#22c55e';
@@ -1646,23 +1712,93 @@ export default function App() {
                 </div>
               )}
 
-              {/* Estimasi tarif tol */}
+              {/* Selector kendaraan & BBM */}
+              <div style={S.card}>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+                  <div style={S.label}>Kendaraan & BBM</div>
+                </div>
+                <div style={{ display:'flex', gap:4, flexWrap:'wrap', marginBottom:6 }}>
+                  {VEHICLE_TYPES.map(v => (
+                    <button key={v.id} onClick={() => setVehicleType(v.id)}
+                      style={{ ...S.btnSm(vehicleType===v.id,'#38bdf8'), fontSize:9 }}>{v.label}</button>
+                  ))}
+                </div>
+                <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
+                  {FUEL_TYPES.map(f => (
+                    <button key={f.id} onClick={() => setFuelType(f.id)}
+                      style={{ ...S.btnSm(fuelType===f.id,'#22c55e'), fontSize:9 }}>{f.label}</button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Estimasi tarif tol (semua koridor) */}
               {tollEstimate && (
                 <div style={S.card}>
-                  <div style={S.label}>Estimasi Tarif Tol</div>
-                  <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                  <div style={S.label}>🛣️ Estimasi Tarif Tol</div>
+                  <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
                     {tollEstimate.corridors.map((cor, i) => (
-                      <div key={cor.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', fontSize:11, color:'#94a3b8', padding:'3px 0', borderBottom: i<tollEstimate.corridors.length-1?'1px solid rgba(255,255,255,.05)':'none' }}>
-                        <span>🛣️ {cor.name}</span>
-                        <span style={{ color:'#e2e8f0', fontVariantNumeric:'tabular-nums', fontWeight:600 }}>Rp {cor.price.toLocaleString('id-ID')}</span>
+                      <div key={cor.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', fontSize:10, color:'#94a3b8', padding:'3px 0', borderBottom:i<tollEstimate.corridors.length-1?'1px solid rgba(255,255,255,.05)':'none' }}>
+                        <span>{cor.name}</span>
+                        <span style={{ color:'#e2e8f0', fontVariantNumeric:'tabular-nums', fontWeight:700 }}>Rp {Math.round(cor.price*(VEHICLE_TYPES.find(v=>v.id===vehicleType)?.tollFactor||1)).toLocaleString('id-ID')}</span>
                       </div>
                     ))}
                   </div>
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:8, paddingTop:6, borderTop:'1px solid rgba(255,255,255,.1)' }}>
-                    <span style={{ fontSize:11, fontWeight:700, color:'#f0f9ff' }}>Total Estimasi</span>
-                    <span style={{ fontSize:15, fontWeight:900, color:'#f59e0b', fontVariantNumeric:'tabular-nums' }}>Rp {tollEstimate.total.toLocaleString('id-ID')}</span>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:7, paddingTop:6, borderTop:'1px solid rgba(255,255,255,.1)' }}>
+                    <span style={{ fontSize:11, fontWeight:700, color:'#f0f9ff' }}>Total Tol</span>
+                    <span style={{ fontSize:16, fontWeight:900, color:'#f59e0b', fontVariantNumeric:'tabular-nums' }}>Rp {tollEstimate.total.toLocaleString('id-ID')}</span>
                   </div>
-                  <div style={{ fontSize:9, color:'#475569', marginTop:5 }}>*Golongan I (sedan/jeep). Tarif jalan non-tol tidak termasuk.</div>
+                  <div style={{ fontSize:9, color:'#475569', marginTop:4 }}>*Tarif sesuai golongan kendaraan yang dipilih.</div>
+                </div>
+              )}
+
+              {/* Estimasi konsumsi BBM */}
+              {fuelEstimate && (
+                <div style={S.card}>
+                  <div style={S.label}>⛽ Estimasi Konsumsi BBM</div>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                    <div>
+                      <div style={{ fontSize:9, color:'#64748b', marginBottom:2 }}>Konsumsi</div>
+                      <div style={{ fontSize:20, fontWeight:900, color:'#f0f9ff', fontVariantNumeric:'tabular-nums' }}>
+                        {fuelEstimate.liters}<span style={{ fontSize:10, color:'#64748b', fontWeight:400 }}> liter</span>
+                      </div>
+                    </div>
+                    <div style={{ textAlign:'right' }}>
+                      <div style={{ fontSize:9, color:'#64748b', marginBottom:2 }}>{fuelEstimate.fuelLabel}</div>
+                      <div style={{ fontSize:20, fontWeight:900, color:'#22c55e', fontVariantNumeric:'tabular-nums' }}>
+                        Rp {fuelEstimate.cost.toLocaleString('id-ID')}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Kamera CCTV aktif di sepanjang rute */}
+              {routeCameras.length > 0 && (
+                <div style={S.card}>
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:7 }}>
+                    <div style={S.label}>📹 Kamera CCTV di Rute</div>
+                    <span style={{ fontSize:10, fontWeight:800, color:'#38bdf8', background:'rgba(56,189,248,.12)', borderRadius:10, padding:'1px 7px' }}>{routeCameras.length}</span>
+                  </div>
+                  <div style={{ maxHeight:140, overflowY:'auto', display:'flex', flexDirection:'column', gap:4 }}>
+                    {routeCameras.map(cam => {
+                      const v  = getEffectiveVehicles(cam);
+                      const cc = v>40?'#f43f5e':v>20?'#f59e0b':'#10b981';
+                      const cl = v>40?'PADAT':v>20?'RAMAI':'LANCAR';
+                      return (
+                        <button key={cam.id}
+                          onClick={() => { setSelected(cam); setMapFlyTo({ lat:cam.lat, lng:cam.lng, zoom:16 }); setTimeout(()=>setMapFlyTo(null),2500); }}
+                          style={{ display:'flex', alignItems:'center', gap:8, background:'rgba(255,255,255,.04)', border:'1px solid rgba(255,255,255,.07)', borderRadius:7, padding:'6px 9px', cursor:'pointer', textAlign:'left', transition:'background .1s' }}
+                          onMouseEnter={e=>e.currentTarget.style.background='rgba(56,189,248,.08)'}
+                          onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,.04)'}
+                        >
+                          <span style={{ width:7,height:7,borderRadius:'50%',background:cc,boxShadow:`0 0 5px ${cc}`,flexShrink:0 }} />
+                          <span style={{ fontSize:10,fontWeight:600,color:'#e2e8f0',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>{cam.name}</span>
+                          <span style={{ fontSize:9,fontWeight:700,color:cc,flexShrink:0 }}>{cl}</span>
+                          <span style={{ fontSize:9,color:'#475569',flexShrink:0 }}>▶</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
 
@@ -1691,7 +1827,7 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  <button onClick={() => { setRouteSegments([]); setEta(null); setStartPoint(null); setEndPoint(null); setRouteNames(null); setRouteSteps([]); setWaypointETAs([]); setSearchFrom(''); setSearchTo(''); setAltRoutes([]); setActiveRouteIdx(0); setTollEstimate(null); }}
+                  <button onClick={() => { setRouteSegments([]); setEta(null); setStartPoint(null); setEndPoint(null); setRouteNames(null); setRouteSteps([]); setWaypointETAs([]); setSearchFrom(''); setSearchTo(''); setAltRoutes([]); setActiveRouteIdx(0); setTollEstimate(null); setFuelEstimate(null); setRouteCameras([]); routeCoordsRef.current = []; }}
                     style={{ marginTop:8, width:'100%', background:'rgba(244,63,94,.1)', border:'1px solid rgba(244,63,94,.25)', borderRadius:7, padding:'6px 0', fontSize:11, color:'#f43f5e', fontWeight:700, cursor:'pointer' }}>
                     ✕ Batalkan Rute
                   </button>
