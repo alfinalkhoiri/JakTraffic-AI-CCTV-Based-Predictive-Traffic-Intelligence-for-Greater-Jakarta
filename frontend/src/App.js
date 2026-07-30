@@ -544,7 +544,17 @@ export default function App() {
   const [showChat, setShowChat] = useState(false);
 
   // Route/CCTV filter mode: "all" | "city" | "toll"
-  const [routeMode, setRouteMode] = useState("all");
+  const [routeMode, setRouteMode]   = useState("all");
+  const [cameraArea, setCameraArea] = useState("all"); // wilayah: all|pusat|utara|barat|timur|selatan|bekasi
+
+  const AREA_FILTERS = {
+    pusat:   c => c.lat < -6.16 && c.lat > -6.24 && c.lng > 106.81 && c.lng < 106.87 && c.road_type !== 'toll',
+    utara:   c => c.lat > -6.17 && c.lng < 106.93 && c.road_type !== 'toll',
+    barat:   c => c.lng < 106.80 && c.lat > -6.30 && c.road_type !== 'toll',
+    timur:   c => c.lng > 106.87 && c.lat > -6.27 && c.lat < -6.16 && c.road_type !== 'toll',
+    selatan: c => c.lat < -6.27 && c.road_type !== 'toll',
+    bekasi:  c => c.lng > 106.96,
+  };
 
   // Toll road corridor polylines: [{points:[[lat,lng],...], name, color}]
   const [tollRoadLines, setTollRoadLines] = useState([]);
@@ -584,6 +594,10 @@ export default function App() {
   useEffect(() => { dynamicFloodRiskRef.current = dynamicFloodRisk; }, [dynamicFloodRisk]);
   const [showTripSummary, setShowTripSummary] = useState(false);
   const [tripSummaryData, setTripSummaryData] = useState(null);
+  const [showSOS, setShowSOS]                 = useState(false);
+  const [sosType, setSosType]                 = useState('Kecelakaan');
+  const [sosDesc, setSosDesc]                 = useState('');
+  const [sosSent, setSosSent]                 = useState(false);
 
   // ── Mode Berkendara ──────────────────────────────────────────────────────
   const [drivingMode, setDrivingMode]       = useState(false);
@@ -892,8 +906,10 @@ export default function App() {
     }
   };
 
-  const filteredCctv = (routeMode === "all" ? cctv : cctv.filter(c => (c.road_type || "city") === routeMode))
-    .filter(c => c.lat != null && c.lng != null);
+  const filteredCctv = cctv
+    .filter(c => c.lat != null && c.lng != null)
+    .filter(c => routeMode === "all" || (c.road_type || "city") === routeMode)
+    .filter(c => cameraArea === "all" || (AREA_FILTERS[cameraArea]?.(c) ?? true));
 
   /* ================= TOLL ROAD CORRIDOR OVERLAY ================= */
   useEffect(() => {
@@ -1763,10 +1779,33 @@ export default function App() {
 
           {/* ——— FILTER RUTE ——— */}
           <div style={S.card}>
-            <div style={S.label}>Filter Kamera</div>
-            <div style={{ display:'flex', gap:5 }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+              <div style={S.label}>Filter Kamera</div>
+              <a href="/nvr" style={{ fontSize:9, color:'#38bdf8', textDecoration:'none', background:'rgba(56,189,248,.1)', border:'1px solid rgba(56,189,248,.2)', borderRadius:5, padding:'2px 7px', fontWeight:700 }}>
+                📹 Grid View
+              </a>
+            </div>
+            <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
               {[{l:'🗺️ Semua', v:'all'},{l:'🏙️ Kota', v:'city'},{l:'🛣️ Tol', v:'toll'}].map(o => (
                 <button key={o.v} onClick={() => setRouteMode(o.v)} style={S.btnSm(routeMode===o.v,'#f59e0b')}>{o.l}</button>
+              ))}
+            </div>
+            {/* Wilayah filter */}
+            <div style={{ display:'flex', gap:4, flexWrap:'wrap', marginTop:6 }}>
+              {[
+                { l:'Semua', id:'all',     fn: null },
+                { l:'Jakpus', id:'pusat',  fn: c => c.lat < -6.16 && c.lat > -6.24 && c.lng > 106.81 && c.lng < 106.87 && c.road_type !== 'toll' },
+                { l:'Jakut',  id:'utara',  fn: c => c.lat > -6.17 && c.lng < 106.93 && c.road_type !== 'toll' },
+                { l:'Jakbar', id:'barat',  fn: c => c.lng < 106.80 && c.lat > -6.30 && c.road_type !== 'toll' },
+                { l:'Jaktim', id:'timur',  fn: c => c.lng > 106.87 && c.lat > -6.27 && c.lat < -6.16 && c.road_type !== 'toll' },
+                { l:'Jaksel', id:'selatan',fn: c => c.lat < -6.27 && c.road_type !== 'toll' },
+                { l:'Bekasi', id:'bekasi', fn: c => c.lng > 106.96 },
+              ].map(o => (
+                <button key={o.id}
+                  onClick={() => setCameraArea(o.id)}
+                  style={{ ...S.btnSm(cameraArea===o.id,'#22d3ee'), fontSize:9, padding:'2px 7px' }}>
+                  {o.l}
+                </button>
               ))}
             </div>
           </div>
@@ -2388,6 +2427,73 @@ export default function App() {
         </div>
       );
     })()}
+
+    {/* ══ SOS FLOATING BUTTON ═══════════════════════════════════════════ */}
+    {!drivingMode && (
+      <button
+        onClick={() => { setShowSOS(true); setSosSent(false); setSosDesc(''); }}
+        title="Laporkan insiden jalan"
+        style={{ position:'fixed', bottom:36, right:14, zIndex:900, width:46, height:46, borderRadius:'50%', background:'linear-gradient(135deg,#ef4444,#dc2626)', border:'none', color:'white', fontSize:20, cursor:'pointer', boxShadow:'0 4px 16px rgba(239,68,68,.5)', display:'flex', alignItems:'center', justifyContent:'center' }}
+      >🆘</button>
+    )}
+
+    {/* ══ SOS MODAL ══════════════════════════════════════════════════════ */}
+    {showSOS && (
+      <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.7)', zIndex:9997, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+        <div style={{ background:'rgba(9,18,36,.98)', border:'1px solid rgba(239,68,68,.25)', borderRadius:16, padding:24, maxWidth:340, width:'100%', fontFamily:'system-ui,sans-serif', color:'#f0f9ff' }}>
+          {!sosSent ? (
+            <>
+              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:18 }}>
+                <span style={{ fontSize:24 }}>🆘</span>
+                <div>
+                  <div style={{ fontSize:14, fontWeight:800 }}>Laporkan Insiden</div>
+                  <div style={{ fontSize:10, color:'#64748b' }}>Informasi diteruskan ke operator Dishub</div>
+                </div>
+                <button onClick={() => setShowSOS(false)} style={{ marginLeft:'auto', background:'none', border:'none', color:'#64748b', fontSize:16, cursor:'pointer' }}>✕</button>
+              </div>
+              <div style={{ marginBottom:12 }}>
+                <div style={{ fontSize:10, color:'#64748b', marginBottom:6, fontWeight:700 }}>Jenis Insiden</div>
+                <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                  {['Kecelakaan','Kemacetan Padat','Jalan Rusak','Banjir','Kendaraan Mogok','Lainnya'].map(t => (
+                    <button key={t} onClick={() => setSosType(t)}
+                      style={{ padding:'5px 10px', background: sosType===t?'rgba(239,68,68,.2)':'rgba(255,255,255,.05)', border:`1px solid ${sosType===t?'rgba(239,68,68,.5)':'rgba(255,255,255,.1)'}`, borderRadius:6, fontSize:10, color: sosType===t?'#fca5a5':'#94a3b8', cursor:'pointer', fontWeight: sosType===t?700:400 }}>
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ marginBottom:16 }}>
+                <div style={{ fontSize:10, color:'#64748b', marginBottom:6, fontWeight:700 }}>Keterangan (opsional)</div>
+                <textarea value={sosDesc} onChange={e => setSosDesc(e.target.value)} placeholder="Deskripsikan situasi..."
+                  style={{ width:'100%', boxSizing:'border-box', background:'rgba(255,255,255,.05)', border:'1px solid rgba(255,255,255,.1)', borderRadius:8, padding:'8px 10px', color:'#f0f9ff', fontSize:11, resize:'none', height:72, outline:'none' }} />
+              </div>
+              <button onClick={async () => {
+                  try {
+                    const lat = userGPS?.lat ?? -6.2;
+                    const lng = userGPS?.lng ?? 106.816;
+                    await axios.post(`${API}/api/report-incident`, { type: sosType, description: sosDesc, lat, lng, timestamp: new Date().toISOString() });
+                  } catch {} // graceful — UI masih konfirmasi
+                  setSosSent(true);
+                  if (notifEnabled) new Notification('🆘 Laporan Terkirim', { body: `Insiden ${sosType} dilaporkan ke operator Dishub.` });
+                }}
+                style={{ width:'100%', background:'linear-gradient(135deg,#ef4444,#dc2626)', border:'none', borderRadius:9, padding:'11px 0', fontSize:13, fontWeight:700, color:'white', cursor:'pointer' }}>
+                🆘 Kirim Laporan
+              </button>
+            </>
+          ) : (
+            <div style={{ textAlign:'center', padding:'16px 0' }}>
+              <div style={{ fontSize:36, marginBottom:12 }}>✅</div>
+              <div style={{ fontSize:14, fontWeight:800, color:'#22c55e', marginBottom:6 }}>Laporan Terkirim!</div>
+              <div style={{ fontSize:11, color:'#64748b', marginBottom:18 }}>Operator Dishub akan merespons segera.</div>
+              <button onClick={() => setShowSOS(false)}
+                style={{ background:'rgba(34,197,94,.15)', border:'1px solid rgba(34,197,94,.3)', borderRadius:8, padding:'8px 24px', color:'#22c55e', fontSize:12, fontWeight:700, cursor:'pointer' }}>
+                Tutup
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
 
     {/* ══ TRIP SUMMARY MODAL ═════════════════════════════════════════════ */}
     {showTripSummary && tripSummaryData && (

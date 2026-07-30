@@ -5,6 +5,7 @@ import './index.css';
 import App from './App';
 import Admin from './pages/Admin';
 import AdminLogin from './pages/AdminLogin';
+import NVR from './pages/NVR';
 
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { error: null }; }
@@ -32,6 +33,7 @@ root.render(
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<App />} />
+        <Route path="/nvr" element={<NVR />} />
         <Route path="/admin" element={<Admin />} />
         <Route path="/admin-login" element={<AdminLogin />} />
       </Routes>

@@ -365,15 +365,34 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
           </div>
         ))}
 
-        {/* Detail button */}
-        <button
-          onClick={onSelectDetail}
-          style={{ marginTop: 8, width: "100%", background: "#334155", border: "none", borderRadius: 8, padding: "7px 0", color: "#cbd5e1", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
-          onMouseEnter={e => e.currentTarget.style.background = "#475569"}
-          onMouseLeave={e => e.currentTarget.style.background = "#334155"}
-        >
-          Lihat Analitik Detail →
-        </button>
+        {/* Action buttons */}
+        <div style={{ display:"flex", gap:6, marginTop:8 }}>
+          <button
+            onClick={onSelectDetail}
+            style={{ flex:1, background:"#334155", border:"none", borderRadius:8, padding:"7px 0", color:"#cbd5e1", fontSize:11, fontWeight:700, cursor:"pointer" }}
+            onMouseEnter={e => e.currentTarget.style.background="#475569"}
+            onMouseLeave={e => e.currentTarget.style.background="#334155"}
+          >
+            Analitik Detail →
+          </button>
+          <button
+            title="Ambil Snapshot"
+            onClick={() => {
+              const ts = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+              const fname = `${cam.name.replace(/[^a-z0-9]/gi,'_')}_${ts}.jpg`;
+              if (cam.preview_url?.startsWith('__snap__:')) {
+                const url = `${API}/api/camera-snapshot/${cam.preview_url.replace('__snap__:','')}`;
+                fetch(url).then(r => r.blob()).then(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = fname; a.click(); });
+              } else {
+                alert('Snapshot hanya tersedia untuk kamera dengan feed aktif.');
+              }
+            }}
+            style={{ background:"rgba(56,189,248,.12)", border:"1px solid rgba(56,189,248,.2)", borderRadius:8, padding:"7px 10px", color:"#38bdf8", fontSize:13, cursor:"pointer" }}
+            title="Unduh snapshot kamera"
+          >
+            📸
+          </button>
+        </div>
       </div>
 
       <style>{`

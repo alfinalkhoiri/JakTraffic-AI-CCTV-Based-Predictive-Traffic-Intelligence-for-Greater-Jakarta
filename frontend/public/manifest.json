@@ -1,0 +1,23 @@
+{
+  "name": "JakTraffic AI — Pemantauan Lalu Lintas Jakarta",
+  "short_name": "JakTraffic",
+  "description": "Sistem pemantauan dan prediksi lalu lintas berbasis AI untuk DKI Jakarta dan Bekasi",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "theme_color": "#020b18",
+  "background_color": "#020b18",
+  "orientation": "any",
+  "lang": "id",
+  "categories": ["navigation", "traffic", "utilities"],
+  "icons": [
+    { "src": "/favicon.ico", "sizes": "64x64", "type": "image/x-icon" }
+  ],
+  "shortcuts": [
+    { "name": "Peta Live", "short_name": "Peta", "url": "/", "description": "Peta lalu lintas real-time" },
+    { "name": "Grid CCTV", "short_name": "NVR", "url": "/nvr", "description": "Lihat banyak kamera sekaligus" },
+    { "name": "Panel Operator", "short_name": "Operator", "url": "/admin-login", "description": "Dashboard operator Dishub" }
+  ],
+  "screenshots": []
+}

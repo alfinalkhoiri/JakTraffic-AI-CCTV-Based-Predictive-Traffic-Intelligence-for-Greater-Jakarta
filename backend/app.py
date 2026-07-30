@@ -337,6 +337,20 @@ def weather_jakarta():
                         "temp_c": 30, "description": "N/A", "icon": "🌤️", "error": str(e)})
 
 
+@app.route("/api/report-incident", methods=["POST"])
+def report_incident():
+    """Terima laporan insiden dari user di lapangan."""
+    data = request.json or {}
+    inc_type = data.get("type", "Tidak diketahui")
+    desc     = data.get("description", "")
+    lat      = data.get("lat", 0)
+    lng      = data.get("lng", 0)
+    ts       = data.get("timestamp", "")
+    logger.info("[SOS] Insiden=%s | lat=%s,lng=%s | %s | %s", inc_type, lat, lng, ts, desc[:100])
+    # Simpan ke log (bisa juga dikirim ke email/webhook di sini)
+    return jsonify({"success": True, "message": f"Laporan '{inc_type}' diterima, terima kasih."})
+
+
 @app.route("/api/cameras-live")
 def cameras_live():
     """Daftar kamera yang saat ini tersedia dari lewatmana.com."""
