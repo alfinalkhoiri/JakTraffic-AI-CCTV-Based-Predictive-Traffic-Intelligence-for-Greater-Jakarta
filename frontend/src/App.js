@@ -395,11 +395,13 @@ const INCIDENT_EMOJI = { 1: "💥", 6: "🐢", 7: "🚧", 8: "⛔", 9: "🔧", 1
 
 const incidentIcon = (category) => {
   const color = [1, 8].includes(category) ? "#ef4444" : [6].includes(category) ? "#f97316" : "#f59e0b";
-  const emoji = INCIDENT_EMOJI[category] || "⚠";
+  // Segitiga peringatan — tidak mirip kotak sinyal lalu lintas
   return L.divIcon({
     className: "",
-    html: `<div style="width:26px;height:26px;background:${color};border:2px solid rgba(255,255,255,.85);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.5);">${emoji}</div>`,
-    iconSize: [26, 26], iconAnchor: [13, 13],
+    html: `<div style="width:0;height:0;border-left:9px solid transparent;border-right:9px solid transparent;border-bottom:16px solid ${color};filter:drop-shadow(0 1px 3px rgba(0,0,0,.6));position:relative;">
+      <span style="position:absolute;top:3px;left:-4px;font-size:7px;font-weight:900;color:#fff;line-height:1;">!</span>
+    </div>`,
+    iconSize: [18, 16], iconAnchor: [9, 16],
   });
 };
 
