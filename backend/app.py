@@ -295,6 +295,48 @@ def cctv_status():
     return jsonify(db_handler.get_all_cctv_status())
 
 
+_WEATHER_CACHE = {"ts": 0, "data": None}
+WEATHER_TTL    = 1800  # 30 menit
+
+@app.route("/api/weather-jakarta")
+def weather_jakarta():
+    """Cuaca terkini Jakarta via wttr.in (no API key, cache 30 menit)."""
+    now = time.time()
+    if _WEATHER_CACHE["data"] and now - _WEATHER_CACHE["ts"] < WEATHER_TTL:
+        return jsonify(_WEATHER_CACHE["data"])
+    try:
+        r = requests.get(
+            "https://wttr.in/Jakarta?format=j1", timeout=10,
+            headers={"User-Agent": "JakTrafficAI/1.0 (traffic monitoring)"}
+        )
+        if not r.ok:
+            raise ValueError(f"HTTP {r.status_code}")
+        raw   = r.json()
+        cond  = raw["current_condition"][0]
+        rain  = float(cond.get("precipMM", 0))
+        cloud = int(cond.get("cloudcover", 0))
+        data  = {
+            "temp_c":      int(cond["temp_C"]),
+            "feels_c":     int(cond.get("FeelsLikeC", cond["temp_C"])),
+            "humidity":    int(cond["humidity"]),
+            "description": cond["weatherDesc"][0]["value"],
+            "rain_mm":     rain,
+            "wind_kmph":   int(cond["windspeedKmph"]),
+            "cloud_pct":   cloud,
+            "is_raining":  rain > 0,
+            "heavy_rain":  rain >= 5,
+            "icon":        "🌧️" if rain >= 5 else "🌦️" if rain > 0 else ("🌤️" if cloud < 50 else "☁️"),
+        }
+        _WEATHER_CACHE["ts"]   = now
+        _WEATHER_CACHE["data"] = data
+        return jsonify(data)
+    except Exception as e:
+        logger.warning("[weather] %s", e)
+        # Return safe default — bukan error agar frontend tetap berjalan
+        return jsonify({"rain_mm": 0, "is_raining": False, "heavy_rain": False,
+                        "temp_c": 30, "description": "N/A", "icon": "🌤️", "error": str(e)})
+
+
 @app.route("/api/cameras-live")
 def cameras_live():
     """Daftar kamera yang saat ini tersedia dari lewatmana.com."""

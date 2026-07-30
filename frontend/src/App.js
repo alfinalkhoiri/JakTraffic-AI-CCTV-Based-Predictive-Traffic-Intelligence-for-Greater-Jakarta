@@ -103,6 +103,17 @@ const FUEL_TYPES = [
   { id:'solar',     label:'Solar',     price:6800  },
 ];
 
+/* ─── Flood risk helpers ─────────────────────────────────────────────────── */
+const FLOOD_RISK_ORDER = { HIGH: 2, MEDIUM: 1, LOW: 0 };
+const FLOOD_RISK_NAMES = ['LOW', 'MEDIUM', 'HIGH'];
+const elevateRisk = (risk, steps) =>
+  FLOOD_RISK_NAMES[Math.min(2, FLOOD_RISK_ORDER[risk] + steps)];
+
+function floodScoreForRoute(coords, dynamicRisk) {
+  const zones = checkRouteFloodZones(coords);
+  return zones.reduce((s, z) => s + ({ HIGH: 3, MEDIUM: 2, LOW: 1 }[dynamicRisk[z.name] || z.risk] ?? 0), 0);
+}
+
 /* =============== Helper 1 Jam Predik ================= */
 const predictionStyle = (status) => {
   switch (status) {
@@ -547,6 +558,12 @@ export default function App() {
   const [vehicleType, setVehicleType]     = useState(() => localStorage.getItem('jak_vehicle') || 'sedan');
   const [fuelType, setFuelType]           = useState(() => localStorage.getItem('jak_fuel')    || 'pertalite');
   const [floodWarning, setFloodWarning]   = useState([]); // zona banjir di sepanjang rute
+  const [weatherData, setWeatherData]     = useState(null); // BMKG via wttr.in
+  const [dynamicFloodRisk, setDynamicFloodRisk] = useState({}); // zone.name → elevated risk
+  const dynamicFloodRiskRef = useRef({});  // ref agar fetchRoute dapat nilai terbaru
+  useEffect(() => { dynamicFloodRiskRef.current = dynamicFloodRisk; }, [dynamicFloodRisk]);
+  const [showTripSummary, setShowTripSummary] = useState(false); // modal ringkasan
+  const [tripSummaryData, setTripSummaryData] = useState(null);
   const routeCoordsRef                    = useRef([]);
   const [routeCameras, setRouteCameras]   = useState([]); // CCTV along active route
 
@@ -714,6 +731,38 @@ export default function App() {
   // Persistensi pilihan kendaraan & BBM
   useEffect(() => { localStorage.setItem('jak_vehicle', vehicleType); }, [vehicleType]);
   useEffect(() => { localStorage.setItem('jak_fuel',    fuelType);    }, [fuelType]);
+
+  /* ================= CUACA JAKARTA (BMKG via wttr.in) ================= */
+  useEffect(() => {
+    const fetchWeather = () =>
+      axios.get(`${API}/api/weather-jakarta`).then(r => setWeatherData(r.data)).catch(() => {});
+    fetchWeather();
+    const t = setInterval(fetchWeather, 30 * 60 * 1000); // refresh tiap 30 menit
+    return () => clearInterval(t);
+  }, []);
+
+  /* ================= DYNAMIC FLOOD RISK (TomTom + cuaca) ================= */
+  useEffect(() => {
+    const dynamic = {};
+    FLOOD_ZONES.forEach(zone => {
+      const lats = zone.coords.map(c => c[0]);
+      const lngs = zone.coords.map(c => c[1]);
+      const cLat = (Math.max(...lats) + Math.min(...lats)) / 2;
+      const cLng = (Math.max(...lngs) + Math.min(...lngs)) / 2;
+      let risk = zone.risk;
+      // Elevate jika ada TomTom incident banjir (cat 11) dalam radius 3km
+      const hasFloodInc = tomtomIncidents.some(
+        inc => inc.category === 11 && inc.lat && inc.lng &&
+               haversineDistance(cLat, cLng, inc.lat, inc.lng) < 3000
+      );
+      if (hasFloodInc) risk = elevateRisk(risk, 1);
+      // Elevate berdasarkan curah hujan BMKG
+      if (weatherData?.heavy_rain)              risk = elevateRisk(risk, 1);
+      else if (weatherData?.is_raining && risk === 'LOW') risk = 'MEDIUM';
+      dynamic[zone.name] = risk;
+    });
+    setDynamicFloodRisk(dynamic);
+  }, [tomtomIncidents, weatherData]);
 
   /* ================= LOAD CCTV ================= */
   useEffect(() => {
@@ -949,6 +998,7 @@ export default function App() {
         setFuelEstimate({ liters: fuelLiters0, cost: Math.round(fuelLiters0 * fuel0.price), fuelLabel: fuel0.label });
 
         // ── Periksa zona banjir di sepanjang rute ─────────────────────────
+        const dynRisk   = dynamicFloodRiskRef.current;
         const floodZones = checkRouteFloodZones(coords);
         setFloodWarning(floodZones);
         if (floodZones.length > 0 && notifEnabled) {
@@ -958,11 +1008,29 @@ export default function App() {
           });
         }
 
-        setAltRoutes(processedAlts);
+        // ── ETA adaptif berdasarkan risiko banjir aktual ──────────────
+        let etaFloodMult = 1.0;
+        let floodEtaNote = null;
+        if (floodZones.length > 0) {
+          const worstEffective = (dynRisk[floodZones[0].name] || floodZones[0].risk);
+          if (worstEffective === 'HIGH')   { etaFloodMult = 1.35; floodEtaNote = '+35% dampak banjir'; }
+          else if (worstEffective === 'MEDIUM') { etaFloodMult = 1.18; floodEtaNote = '+18% potensi kemacetan'; }
+        }
+        const adjustedCumMin = Math.round(cumMin * etaFloodMult);
+
+        // ── Flood score per alternatif (badge di tab rute) ────────────
+        const scoredAlts = processedAlts.map((r, idx) => {
+          const rCoords  = r.coords || (idx === 0 ? coords : []);
+          const fScore   = floodScoreForRoute(rCoords, dynRisk);
+          const isSafest = fScore === 0;
+          return { ...r, floodScore: fScore, floodSafe: isSafest };
+        });
+
+        setAltRoutes(scoredAlts);
         setActiveRouteIdx(0);
         setRouteSegments(fullSegments);
         setWaypointETAs(newWaypointETAs);
-        setEta({ time: cumMin, distance: cumKm.toFixed(1) });
+        setEta({ time: adjustedCumMin, distance: cumKm.toFixed(1), floodNote: floodEtaNote, baseTime: cumMin });
         setRouteSteps(mappedSteps);
 
         // ── Voice — informasi lengkap: rute + tol + BBM + banjir ─────────
@@ -971,10 +1039,12 @@ export default function App() {
         const altText   = processedAlts.length > 1 ? ` Ada ${processedAlts.length} pilihan rute.` : '';
         const tollText  = tolledCors.length ? ` Estimasi tarif tol Rp ${tollTotal.toLocaleString('id-ID')}.` : '';
         const fuelTxt   = ` Konsumsi bensin sekitar ${fuelLiters0} liter atau Rp ${Math.round(fuelLiters0 * fuel0.price).toLocaleString('id-ID')}.`;
-        const floodTxt  = floodZones.length > 0 ? ` Perhatian! Rute melewati zona rawan banjir ${floodZones[0].name}.` : '';
+        const floodTxt  = floodZones.length > 0 ? ` Perhatian! Rute melewati zona rawan banjir ${floodZones[0].name}${floodEtaNote ? ', ETA disesuaikan.' : '.'}` : '';
+        const safeAlt   = scoredAlts.findIndex((r, i) => i > 0 && r.floodScore < (scoredAlts[0].floodScore || 99));
+        const safeAltTxt = safeAlt > 0 ? ` Rute ${safeAlt + 1} lebih aman dari banjir.` : '';
         const firstStep = mappedSteps[0];
         const firstTxt  = firstStep ? ` ${maneuverLabel(firstStep.type, firstStep.modifier)}${firstStep.name ? ' di ' + firstStep.name : ''}.` : '';
-        speak(`Rute dari ${fromName} ke ${toName}. Jarak ${cumKm.toFixed(1)} kilometer, perkiraan ${cumMin} menit.${altText}${tollText}${fuelTxt}${floodTxt}${firstTxt}`);
+        speak(`Rute dari ${fromName} ke ${toName}. Jarak ${cumKm.toFixed(1)} kilometer, perkiraan ${adjustedCumMin} menit.${altText}${tollText}${fuelTxt}${floodTxt}${safeAltTxt}${firstTxt}`);
 
       } catch (err) {
         console.error("Routing error:", err);
@@ -1322,6 +1392,14 @@ export default function App() {
             title={wsConnected ? 'Live WebSocket — data real-time' : 'WebSocket terputus — polling fallback aktif'}
             style={{ width:7, height:7, borderRadius:'50%', flexShrink:0, background: wsConnected ? '#22c55e' : '#f59e0b', boxShadow: wsConnected ? '0 0 7px #22c55e' : 'none', cursor:'default' }}
           />
+          {weatherData && (
+            <span
+              title={`Jakarta: ${weatherData.description} | ${weatherData.temp_c}°C | Hujan: ${weatherData.rain_mm}mm/h`}
+              style={{ fontSize:10, color: weatherData.heavy_rain ? '#60a5fa' : '#64748b', cursor:'default', userSelect:'none', fontWeight:600 }}
+            >
+              {weatherData.icon} {weatherData.temp_c}°C
+            </span>
+          )}
           <button
             onClick={() => setShowFlood(v => !v)}
             style={{ ...S.btn(showFlood), minWidth:32 }}
@@ -1355,18 +1433,20 @@ export default function App() {
         <FlyToHandler target={mapFlyTo} />
         <FitBoundsHandler segments={routeSegments} />
 
-        {/* Overlay zona rawan banjir */}
-        {showFlood && FLOOD_ZONES.map((z, i) => (
-          <Polygon
-            key={`flood-${i}`}
-            positions={z.coords}
-            pathOptions={{ color: FLOOD_RISK_COLOR[z.risk], fillColor: FLOOD_RISK_COLOR[z.risk], fillOpacity: 0.18, weight: 1.5, opacity: 0.55, dashArray: '5 3' }}
-          >
-            <LeafletTooltip sticky direction="top">
-              🌊 {z.name} — {FLOOD_RISK_LABEL[z.risk]}
-            </LeafletTooltip>
-          </Polygon>
-        ))}
+        {/* Overlay zona rawan banjir (warna dinamis berdasarkan cuaca + TomTom) */}
+        {showFlood && FLOOD_ZONES.map((z, i) => {
+          const effRisk  = dynamicFloodRisk[z.name] || z.risk;
+          const elevated = effRisk !== z.risk;
+          return (
+            <Polygon key={`flood-${i}`} positions={z.coords}
+              pathOptions={{ color: FLOOD_RISK_COLOR[effRisk], fillColor: FLOOD_RISK_COLOR[effRisk], fillOpacity: elevated ? 0.28 : 0.18, weight: elevated ? 2 : 1.5, opacity: elevated ? 0.8 : 0.55, dashArray: elevated ? null : '5 3' }}
+            >
+              <LeafletTooltip sticky direction="top">
+                🌊 {z.name} — {FLOOD_RISK_LABEL[effRisk]}{elevated ? ' ⬆ (ditingkatkan)' : ''}
+              </LeafletTooltip>
+            </Polygon>
+          );
+        })}
 
         {startPoint && (
           <Marker position={[startPoint.lat, startPoint.lng]} icon={startIcon} draggable eventHandlers={{ dragend: e => setStartPoint(e.target.getLatLng()) }}>
@@ -1708,19 +1788,29 @@ export default function App() {
           {/* ——— ROUTING INFO ——— */}
           {!selected && isRoutingActive && eta && (
             <>
-              <div style={{ ...S.card, borderColor:'rgba(56,189,248,.2)' }}>
+              <div style={{ ...S.card, borderColor: eta.floodNote ? 'rgba(96,165,250,.35)' : 'rgba(56,189,248,.2)' }}>
                 <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
                   <div>
-                    <div style={S.label}>ETA</div>
-                    <div style={{ fontSize:28, fontWeight:900, color:'#38bdf8', fontVariantNumeric:'tabular-nums' }}>{eta.time}<span style={{ fontSize:11, color:'#64748b', fontWeight:400 }}> mnt</span></div>
+                    <div style={S.label}>ETA{eta.floodNote ? ' 🌊' : ''}</div>
+                    <div style={{ fontSize:28, fontWeight:900, color: eta.floodNote ? '#60a5fa' : '#38bdf8', fontVariantNumeric:'tabular-nums' }}>
+                      {eta.time}<span style={{ fontSize:11, color:'#64748b', fontWeight:400 }}> mnt</span>
+                    </div>
+                    {eta.baseTime && eta.baseTime !== eta.time && (
+                      <div style={{ fontSize:9, color:'#94a3b8', marginTop:2 }}>Normal: {eta.baseTime} mnt</div>
+                    )}
                   </div>
                   <div>
                     <div style={S.label}>Jarak</div>
                     <div style={{ fontSize:28, fontWeight:900, color:'#38bdf8', fontVariantNumeric:'tabular-nums' }}>{eta.distance}<span style={{ fontSize:11, color:'#64748b', fontWeight:400 }}> km</span></div>
                   </div>
                 </div>
+                {eta.floodNote && (
+                  <div style={{ marginTop:6, fontSize:9, color:'#93c5fd', background:'rgba(96,165,250,.1)', border:'1px solid rgba(96,165,250,.2)', borderRadius:5, padding:'3px 8px' }}>
+                    🌊 {eta.floodNote}
+                  </div>
+                )}
                 {/* Route condition */}
-                <div style={{ marginTop:10, display:'flex', alignItems:'center', gap:8 }}>
+                <div style={{ marginTop:8, display:'flex', alignItems:'center', gap:8 }}>
                   <span style={{ fontSize:9, fontWeight:700, letterSpacing:.6, color: routeDecisionColor.includes('emerald')?'#10b981':routeDecisionColor.includes('red')?'#f43f5e':'#f59e0b' }}>
                     ● {routeDecisionLabel.toUpperCase()}
                   </span>
@@ -1743,8 +1833,10 @@ export default function App() {
                         <span style={{ width:1, background:'rgba(255,255,255,.1)', height:12, flexShrink:0 }} />
                         <span style={{ fontSize:16, fontWeight:900, color:'#f0f9ff', fontVariantNumeric:'tabular-nums' }}>{r.eta.time}<span style={{ fontSize:9, color:'#64748b', fontWeight:400 }}>mnt</span></span>
                         <span style={{ fontSize:10, color:'#64748b' }}>· {r.eta.distance}km</span>
-                        <span style={{ marginLeft:'auto', fontSize:9, fontWeight:700, color:r.condColor }}>● {r.condition.toUpperCase()}</span>
-                        {idx===activeRouteIdx && <span style={{ fontSize:9, color:'#38bdf8', fontWeight:700 }}>✓</span>}
+                        <span style={{ fontSize:9, fontWeight:700, color:r.condColor }}>● {r.condition.toUpperCase()}</span>
+                        {r.floodSafe && <span style={{ fontSize:8, color:'#34d399', fontWeight:700, background:'rgba(52,211,153,.1)', borderRadius:3, padding:'1px 4px' }}>🌊 Aman</span>}
+                        {r.floodScore > 0 && !r.floodSafe && <span style={{ fontSize:8, color:'#60a5fa', fontWeight:700 }}>🌊×{r.floodScore}</span>}
+                        {idx===activeRouteIdx && <span style={{ fontSize:9, color:'#38bdf8', fontWeight:700, marginLeft:'auto' }}>✓</span>}
                       </button>
                     ))}
                   </div>
@@ -1892,9 +1984,34 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  <button onClick={() => { setRouteSegments([]); setEta(null); setStartPoint(null); setEndPoint(null); setRouteNames(null); setRouteSteps([]); setWaypointETAs([]); setSearchFrom(''); setSearchTo(''); setAltRoutes([]); setActiveRouteIdx(0); setTollEstimate(null); setFuelEstimate(null); setRouteCameras([]); setFloodWarning([]); routeCoordsRef.current = []; }}
+                  <button onClick={() => {
+                    // Simpan ringkasan sebelum reset
+                    if (eta && (routeNames?.from || routeNames?.to)) {
+                      setTripSummaryData({
+                        from:     routeNames?.from || 'Titik Awal',
+                        to:       routeNames?.to   || 'Tujuan',
+                        distance: eta.distance,
+                        time:     eta.time,
+                        baseTime: eta.baseTime || eta.time,
+                        toll:     tollEstimate?.total || 0,
+                        tollCorridors: tollEstimate?.corridors?.map(c => c.name) || [],
+                        fuel:     fuelEstimate,
+                        total:    (tollEstimate?.total || 0) + (fuelEstimate?.cost || 0),
+                        cameras:  routeCameras.length,
+                        cameraNames: routeCameras.slice(0,5).map(c => c.name),
+                        flood:    floodWarning.map(z => ({ name: z.name, risk: dynamicFloodRisk[z.name] || z.risk })),
+                        vehicle:  VEHICLE_TYPES.find(v => v.id === vehicleType)?.label || 'Mobil',
+                        fuelType: FUEL_TYPES.find(f => f.id === fuelType)?.label || 'Pertalite',
+                      });
+                      setShowTripSummary(true);
+                    }
+                    setRouteSegments([]); setEta(null); setStartPoint(null); setEndPoint(null);
+                    setRouteNames(null); setRouteSteps([]); setWaypointETAs([]); setSearchFrom(''); setSearchTo('');
+                    setAltRoutes([]); setActiveRouteIdx(0); setTollEstimate(null); setFuelEstimate(null);
+                    setRouteCameras([]); setFloodWarning([]); routeCoordsRef.current = [];
+                  }}
                     style={{ marginTop:8, width:'100%', background:'rgba(244,63,94,.1)', border:'1px solid rgba(244,63,94,.25)', borderRadius:7, padding:'6px 0', fontSize:11, color:'#f43f5e', fontWeight:700, cursor:'pointer' }}>
-                    ✕ Batalkan Rute
+                    ✕ Selesai & Ringkasan Perjalanan
                   </button>
                 </div>
               )}
@@ -2043,6 +2160,77 @@ export default function App() {
         @media (min-width:768px) { button.md\\:hidden { display:none !important; } aside { display:flex !important; } }
       `}</style>
     </div>
+    {/* ══ TRIP SUMMARY MODAL ═════════════════════════════════════════════ */}
+    {showTripSummary && tripSummaryData && (
+      <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.75)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+        <div style={{ background:'rgba(9,18,36,.98)', border:'1px solid rgba(56,189,248,.25)', borderRadius:18, padding:28, maxWidth:380, width:'100%', fontFamily:'system-ui,sans-serif', color:'#f0f9ff', boxShadow:'0 32px 80px rgba(0,0,0,.8)' }}>
+          {/* Header */}
+          <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:20 }}>
+            <div style={{ width:44, height:44, borderRadius:12, background:'linear-gradient(135deg,#38bdf8,#0ea5e9)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>📋</div>
+            <div>
+              <div style={{ fontSize:15, fontWeight:800 }}>Ringkasan Perjalanan</div>
+              <div style={{ fontSize:10, color:'#64748b', marginTop:1 }}>{tripSummaryData.vehicle} · {tripSummaryData.fuelType}</div>
+            </div>
+          </div>
+          {/* Route */}
+          <div style={{ background:'rgba(56,189,248,.06)', border:'1px solid rgba(56,189,248,.15)', borderRadius:10, padding:'12px 14px', marginBottom:14 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ width:8, height:8, borderRadius:'50%', background:'#22c55e', flexShrink:0 }} />
+              <span style={{ fontSize:11, color:'#94a3b8' }}>{tripSummaryData.from}</span>
+            </div>
+            <div style={{ width:1, height:10, background:'rgba(56,189,248,.2)', margin:'4px 0 4px 3.5px' }} />
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ width:8, height:8, borderRadius:'50%', background:'#ef4444', flexShrink:0 }} />
+              <span style={{ fontSize:11, color:'#94a3b8' }}>{tripSummaryData.to}</span>
+            </div>
+          </div>
+          {/* Stats grid */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:14 }}>
+            {[
+              { label:'Jarak', value:`${tripSummaryData.distance} km`, icon:'🛣️' },
+              { label:'Waktu Tempuh', value:`${tripSummaryData.time} mnt${tripSummaryData.baseTime !== tripSummaryData.time ? ` (+banjir)` : ''}`, icon:'⏱️', note: tripSummaryData.baseTime !== tripSummaryData.time ? `Normal: ${tripSummaryData.baseTime} mnt` : null },
+              ...(tripSummaryData.toll > 0 ? [{ label:'Tarif Tol', value:`Rp ${tripSummaryData.toll.toLocaleString('id-ID')}`, icon:'🛣️' }] : []),
+              ...(tripSummaryData.fuel ? [{ label:'Konsumsi BBM', value:`${tripSummaryData.fuel.liters}L = Rp ${tripSummaryData.fuel.cost.toLocaleString('id-ID')}`, icon:'⛽' }] : []),
+            ].map((s, i) => (
+              <div key={i} style={{ background:'rgba(255,255,255,.04)', border:'1px solid rgba(255,255,255,.07)', borderRadius:8, padding:'10px 12px' }}>
+                <div style={{ fontSize:9, color:'#64748b', marginBottom:3 }}>{s.icon} {s.label}</div>
+                <div style={{ fontSize:13, fontWeight:800, color:'#f0f9ff', fontVariantNumeric:'tabular-nums' }}>{s.value}</div>
+                {s.note && <div style={{ fontSize:8, color:'#475569', marginTop:2 }}>{s.note}</div>}
+              </div>
+            ))}
+          </div>
+          {/* Total */}
+          {tripSummaryData.total > 0 && (
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'rgba(56,189,248,.08)', border:'1px solid rgba(56,189,248,.2)', borderRadius:8, padding:'10px 14px', marginBottom:12 }}>
+              <span style={{ fontSize:12, fontWeight:700 }}>Total Estimasi Biaya</span>
+              <span style={{ fontSize:18, fontWeight:900, color:'#38bdf8', fontVariantNumeric:'tabular-nums' }}>Rp {tripSummaryData.total.toLocaleString('id-ID')}</span>
+            </div>
+          )}
+          {/* Cameras + Flood */}
+          {(tripSummaryData.cameras > 0 || tripSummaryData.flood.length > 0) && (
+            <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
+              {tripSummaryData.cameras > 0 && (
+                <span style={{ fontSize:9, color:'#22d3ee', background:'rgba(34,211,238,.1)', border:'1px solid rgba(34,211,238,.2)', borderRadius:5, padding:'3px 8px', fontWeight:700 }}>
+                  📹 {tripSummaryData.cameras} kamera CCTV
+                </span>
+              )}
+              {tripSummaryData.flood.map((z, i) => (
+                <span key={i} style={{ fontSize:9, color: FLOOD_RISK_COLOR[z.risk], background:`${FLOOD_RISK_COLOR[z.risk]}18`, border:`1px solid ${FLOOD_RISK_COLOR[z.risk]}30`, borderRadius:5, padding:'3px 8px', fontWeight:700 }}>
+                  🌊 {z.name}
+                </span>
+              ))}
+            </div>
+          )}
+          <button
+            onClick={() => { setShowTripSummary(false); setTripSummaryData(null); }}
+            style={{ width:'100%', background:'linear-gradient(135deg,#38bdf8,#0ea5e9)', border:'none', borderRadius:9, padding:'11px 0', fontSize:13, fontWeight:700, color:'#020b18', cursor:'pointer' }}
+          >
+            Tutup
+          </button>
+        </div>
+      </div>
+    )}
+
     {/* Chat UI */}
     <ChatPopup
       visible={showChat}
