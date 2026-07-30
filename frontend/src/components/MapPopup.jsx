@@ -235,7 +235,11 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
     v
   );
   const isToll = cam.road_type === "toll";
-  const isSimulation = streamStatus === "offline";
+  const hasStream    = !!(cam.preview_url || cam.stream_url);
+  // SIMULASI hanya saat tidak ada URL kamera sama sekali
+  // Kamera dengan URL yang sedang offline → "Tidak Tersedia" bukan "SIMULASI"
+  const isSimulation = streamStatus === "offline" && !hasStream;
+  const isOffline    = streamStatus === "offline" && hasStream;
 
   return (
     <div style={{ width: 270, fontFamily: "Inter, sans-serif", borderRadius: 12, overflow: "hidden", background: "#1e293b" }}>
@@ -253,6 +257,11 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
         {isSimulation && (
           <span style={{ fontSize: 9, color: "#64748b", background: "#0f172a", border: "1px solid #334155", borderRadius: 4, padding: "1px 5px", fontWeight: 600 }}>
             SIMULASI
+          </span>
+        )}
+        {isOffline && (
+          <span style={{ fontSize: 9, color: "#94a3b8", background: "#0f172a", border: "1px solid #334155", borderRadius: 4, padding: "1px 5px", fontWeight: 600 }}>
+            📡 Offline
           </span>
         )}
         <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: "auto" }}>{v} kendaraan</span>

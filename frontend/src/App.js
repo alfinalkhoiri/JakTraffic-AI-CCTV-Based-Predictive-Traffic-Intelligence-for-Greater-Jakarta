@@ -79,7 +79,7 @@ const VEHICLE_TYPES = [
 ];
 const FUEL_TYPES = [
   { id:'pertalite', label:'Pertalite', price:10000 },
-  { id:'pertamax',  label:'Pertamax',  price:13700 },
+  { id:'pertamax',  label:'Pertamax',  price:16250 },
   { id:'solar',     label:'Solar',     price:6800  },
 ];
 
@@ -899,9 +899,10 @@ export default function App() {
         // ── Simpan coords untuk rekalkulasi saat vehicle/fuel berubah ────────
         routeCoordsRef.current = coords;
 
-        // ── Kamera CCTV sepanjang rute (radius 400m) ──────────────────────
-        const routeCams = filteredCctv.filter(cam =>
-          coords.some(([lat, lng]) => haversineDistance(lat, lng, cam.lat, cam.lng) < 400)
+        // ── Kamera CCTV sepanjang rute (radius 500m, semua kamera) ────────
+        const routeCams = cctv.filter(cam =>
+          cam.lat != null && cam.lng != null &&
+          coords.some(([lat, lng]) => haversineDistance(lat, lng, cam.lat, cam.lng) < 500)
         );
         setRouteCameras(routeCams);
 
@@ -1375,17 +1376,17 @@ export default function App() {
           </Marker>
         ))}
 
-        {/* Ring aktif kamera sepanjang rute */}
-        {routeCameras.map(cam => (
-          <Circle key={`rcam-${cam.id}`} center={[cam.lat, cam.lng]} radius={420}
-            pathOptions={{ color:'#38bdf8', fillColor:'#38bdf8', fillOpacity:.06, weight:2, opacity:.7, dashArray:'5 4' }} interactive={false} />
-        ))}
-
         {filteredCctv.map(c => {
           const ev = getEffectiveVehicles(c);
           const color = ev > 30 ? '#ef4444' : ev > 15 ? '#f97316' : '#22c55e';
           return <Circle key={`zone-${c.id}`} center={[c.lat, c.lng]} radius={c.road_type==='toll'?200:400} pathOptions={{ color, fillColor:color, fillOpacity:.07, weight:1, opacity:.2 }} />;
         })}
+
+        {/* Ring aktif kamera sepanjang rute — rendered di atas zone circles */}
+        {routeCameras.map(cam => (
+          <Circle key={`rcam-${cam.id}`} center={[cam.lat, cam.lng]} radius={550}
+            pathOptions={{ color:'#22d3ee', fillColor:'#22d3ee', fillOpacity:.08, weight:2.5, opacity:1, dashArray:'9 5' }} interactive={false} />
+        ))}
 
         {filteredCctv.map(c => {
           const ev = getEffectiveVehicles(c);
@@ -1751,20 +1752,26 @@ export default function App() {
                 </div>
               )}
 
-              {/* Estimasi konsumsi BBM */}
-              {fuelEstimate && (
+              {/* Estimasi konsumsi BBM — dari titik awal sampai tujuan */}
+              {fuelEstimate && eta && (
                 <div style={S.card}>
-                  <div style={S.label}>⛽ Estimasi Konsumsi BBM</div>
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+                    <div style={S.label}>⛽ Estimasi Konsumsi BBM</div>
+                    <span style={{ fontSize:9, color:'#64748b' }}>{eta.distance} km total</span>
+                  </div>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end' }}>
                     <div>
-                      <div style={{ fontSize:9, color:'#64748b', marginBottom:2 }}>Konsumsi</div>
-                      <div style={{ fontSize:20, fontWeight:900, color:'#f0f9ff', fontVariantNumeric:'tabular-nums' }}>
-                        {fuelEstimate.liters}<span style={{ fontSize:10, color:'#64748b', fontWeight:400 }}> liter</span>
+                      <div style={{ fontSize:9, color:'#475569', marginBottom:2 }}>Pemakaian BBM</div>
+                      <div style={{ fontSize:22, fontWeight:900, color:'#f0f9ff', fontVariantNumeric:'tabular-nums', lineHeight:1 }}>
+                        {fuelEstimate.liters}<span style={{ fontSize:10, color:'#64748b', fontWeight:400 }}> L</span>
+                      </div>
+                      <div style={{ fontSize:9, color:'#475569', marginTop:3 }}>
+                        {eta.distance} km × {VEHICLE_TYPES.find(v=>v.id===vehicleType)?.consumption ?? 11} L/100km
                       </div>
                     </div>
                     <div style={{ textAlign:'right' }}>
-                      <div style={{ fontSize:9, color:'#64748b', marginBottom:2 }}>{fuelEstimate.fuelLabel}</div>
-                      <div style={{ fontSize:20, fontWeight:900, color:'#22c55e', fontVariantNumeric:'tabular-nums' }}>
+                      <div style={{ fontSize:9, color:'#475569', marginBottom:2 }}>{fuelEstimate.fuelLabel} · Rp {FUEL_TYPES.find(f=>f.id===fuelType)?.price.toLocaleString('id-ID')}/L</div>
+                      <div style={{ fontSize:22, fontWeight:900, color:'#22c55e', fontVariantNumeric:'tabular-nums', lineHeight:1 }}>
                         Rp {fuelEstimate.cost.toLocaleString('id-ID')}
                       </div>
                     </div>
