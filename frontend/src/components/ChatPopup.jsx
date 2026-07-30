@@ -137,7 +137,7 @@ function LlmStatusDot({ status, model, error }) {
 }
 
 // ─── Komponen utama ChatPopup ─────────────────────────────────────────────────
-export default function ChatPopup({ visible, onClose, onMapCommands, showEditMode = false }) {
+export default function ChatPopup({ visible, onClose, onMapCommands, showEditMode = false, userContext = {} }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [mode, setMode] = useState("chat");
@@ -500,7 +500,8 @@ export default function ChatPopup({ visible, onClose, onMapCommands, showEditMod
               return copy;
             });
           }
-        }
+        },
+        userContext   // konteks user: kendaraan, rute, tol, BBM, banjir
       );
 
       abortRef.current = ctrl;

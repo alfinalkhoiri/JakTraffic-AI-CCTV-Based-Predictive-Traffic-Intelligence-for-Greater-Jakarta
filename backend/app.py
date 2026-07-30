@@ -1828,9 +1828,10 @@ def chat_stream():
     """Streaming SSE endpoint. Format: data: {chunk/done/error/actions}"""
     from flask import Response, stream_with_context
 
-    data     = request.json or {}
-    message  = data.get("message", "")
-    history  = data.get("history", [])
+    data         = request.json or {}
+    message      = data.get("message", "")
+    history      = data.get("history", [])
+    user_context = data.get("user_context", {})
 
     # ── TIME CHANGE INTENT (sebelum LLM) ───────────────────────────────────
     time_reply = detect_and_apply_time_change(message)
@@ -1869,6 +1870,38 @@ def chat_stream():
         + (f"\n{db_context}" if db_context else "")
         + (pred_context if pred_context else "")
     )
+
+    # ── Tambah konteks user (kendaraan, rute aktif, tol, BBM, banjir) ──────
+    if user_context:
+        ctx = []
+        if user_context.get("vehicle"):
+            ctx.append(f"Kendaraan user: {user_context['vehicle']}")
+        if user_context.get("fuel"):
+            ctx.append(f"Jenis BBM: {user_context['fuel']}")
+        if user_context.get("route"):
+            r = user_context["route"]
+            ctx.append(
+                f"Rute aktif: {r.get('from','?')} → {r.get('to','?')}, "
+                f"{r.get('distance','?')} km, {r.get('time','?')} menit"
+            )
+        if user_context.get("toll"):
+            t = user_context["toll"]
+            corridors = ", ".join(t.get("corridors", []))
+            ctx.append(f"Estimasi tarif tol: Rp {int(t.get('total', 0)):,} ({corridors})")
+        if user_context.get("fuel_cost"):
+            fc = user_context["fuel_cost"]
+            ctx.append(f"Estimasi BBM: {fc.get('liters', 0)} liter ≈ Rp {int(fc.get('cost', 0)):,}")
+        if user_context.get("flood_warning"):
+            zones = ", ".join(f"{z['name']} ({z['risk']})" for z in user_context["flood_warning"])
+            ctx.append(f"⚠️ RUTE MELEWATI ZONA RAWAN BANJIR: {zones}")
+        if user_context.get("route_cameras"):
+            ctx.append(f"Kamera CCTV di rute: {', '.join(user_context['route_cameras'])}")
+        if ctx:
+            system_content += (
+                "\n\n=== KONTEKS USER SAAT INI ===\n"
+                + "\n".join(ctx)
+                + "\nGunakan informasi ini untuk menjawab pertanyaan user dengan lebih akurat dan personal."
+            )
 
     def _sse(obj):
         return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"

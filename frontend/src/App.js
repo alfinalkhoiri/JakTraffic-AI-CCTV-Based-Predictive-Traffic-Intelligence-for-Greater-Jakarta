@@ -36,6 +36,26 @@ import MapPopup from "./components/MapPopup";
 
 const API = process.env.REACT_APP_API_URL || "";
 
+/* ─── Point-in-polygon (ray casting) untuk cek rute vs zona banjir ──────── */
+function pointInPolygon(lat, lng, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [xi, yi] = polygon[i], [xj, yj] = polygon[j];
+    if ((yi > lng) !== (yj > lng) && lat < ((xj - xi) * (lng - yi)) / (yj - yi) + xi)
+      inside = !inside;
+  }
+  return inside;
+}
+function checkRouteFloodZones(coords) {
+  const seen = new Set(), affected = [];
+  for (const [lat, lng] of coords) {
+    for (const z of FLOOD_ZONES) {
+      if (!seen.has(z.name) && pointInPolygon(lat, lng, z.coords)) { affected.push(z); seen.add(z.name); }
+    }
+  }
+  return affected.sort((a, b) => ({ HIGH:0, MEDIUM:1, LOW:2 }[a.risk] - { HIGH:0, MEDIUM:1, LOW:2 }[b.risk]));
+}
+
 /* ─── Zona Rawan Banjir (BPBD DKI Jakarta) ──────────────────────────────── */
 const FLOOD_ZONES = [
   // HIGH RISK
@@ -521,11 +541,12 @@ export default function App() {
   const [showFlood, setShowFlood]         = useState(false);
 
 
-  // Estimasi tarif tol + BBM + kendaraan
-  const [tollEstimate, setTollEstimate]   = useState(null); // { corridors, total }
-  const [fuelEstimate, setFuelEstimate]   = useState(null); // { liters, cost, fuelLabel }
-  const [vehicleType, setVehicleType]     = useState('sedan');
-  const [fuelType, setFuelType]           = useState('pertalite');
+  // Estimasi tarif tol + BBM + kendaraan (persistent via localStorage)
+  const [tollEstimate, setTollEstimate]   = useState(null);
+  const [fuelEstimate, setFuelEstimate]   = useState(null);
+  const [vehicleType, setVehicleType]     = useState(() => localStorage.getItem('jak_vehicle') || 'sedan');
+  const [fuelType, setFuelType]           = useState(() => localStorage.getItem('jak_fuel')    || 'pertalite');
+  const [floodWarning, setFloodWarning]   = useState([]); // zona banjir di sepanjang rute
   const routeCoordsRef                    = useRef([]);
   const [routeCameras, setRouteCameras]   = useState([]); // CCTV along active route
 
@@ -690,6 +711,10 @@ export default function App() {
     return () => socket.disconnect();
   }, []);
 
+  // Persistensi pilihan kendaraan & BBM
+  useEffect(() => { localStorage.setItem('jak_vehicle', vehicleType); }, [vehicleType]);
+  useEffect(() => { localStorage.setItem('jak_fuel',    fuelType);    }, [fuelType]);
+
   /* ================= LOAD CCTV ================= */
   useEffect(() => {
     const load = async () => {
@@ -728,7 +753,7 @@ export default function App() {
       setRouteNames(null);
       setRouteSteps([]);
       setWaypointETAs([]);
-      setAltRoutes([]); setActiveRouteIdx(0); setTollEstimate(null); setFuelEstimate(null); setRouteCameras([]); routeCoordsRef.current = [];
+      setAltRoutes([]); setActiveRouteIdx(0); setTollEstimate(null); setFuelEstimate(null); setRouteCameras([]); setFloodWarning([]); routeCoordsRef.current = [];
     }
   };
 
@@ -923,6 +948,16 @@ export default function App() {
         const fuelLiters0 = Math.round((cumKm * veh0.consumption / 100) * 10) / 10;
         setFuelEstimate({ liters: fuelLiters0, cost: Math.round(fuelLiters0 * fuel0.price), fuelLabel: fuel0.label });
 
+        // ── Periksa zona banjir di sepanjang rute ─────────────────────────
+        const floodZones = checkRouteFloodZones(coords);
+        setFloodWarning(floodZones);
+        if (floodZones.length > 0 && notifEnabled) {
+          new Notification('🌊 Peringatan Banjir — JakTraffic', {
+            body: `Rute melewati ${floodZones.length} zona rawan banjir: ${floodZones.map(z => z.name).join(', ')}.`,
+            icon: '/favicon.ico',
+          });
+        }
+
         setAltRoutes(processedAlts);
         setActiveRouteIdx(0);
         setRouteSegments(fullSegments);
@@ -930,13 +965,16 @@ export default function App() {
         setEta({ time: cumMin, distance: cumKm.toFixed(1) });
         setRouteSteps(mappedSteps);
 
-        // Voice
-        const fromName = routeNames?.from || 'titik awal';
-        const toName   = routeNames?.to   || 'tujuan';
-        const altText  = processedAlts.length > 1 ? ` Ada ${processedAlts.length} pilihan rute.` : '';
+        // ── Voice — informasi lengkap: rute + tol + BBM + banjir ─────────
+        const fromName  = routeNames?.from || 'titik awal';
+        const toName    = routeNames?.to   || 'tujuan';
+        const altText   = processedAlts.length > 1 ? ` Ada ${processedAlts.length} pilihan rute.` : '';
+        const tollText  = tolledCors.length ? ` Estimasi tarif tol Rp ${tollTotal.toLocaleString('id-ID')}.` : '';
+        const fuelTxt   = ` Konsumsi bensin sekitar ${fuelLiters0} liter atau Rp ${Math.round(fuelLiters0 * fuel0.price).toLocaleString('id-ID')}.`;
+        const floodTxt  = floodZones.length > 0 ? ` Perhatian! Rute melewati zona rawan banjir ${floodZones[0].name}.` : '';
         const firstStep = mappedSteps[0];
-        const firstTxt  = firstStep ? `. ${maneuverLabel(firstStep.type, firstStep.modifier)}${firstStep.name ? ' di ' + firstStep.name : ''}` : '';
-        speak(`Rute dari ${fromName} ke ${toName}. Jarak ${cumKm.toFixed(1)} kilometer, perkiraan ${cumMin} menit.${altText}${firstTxt}`);
+        const firstTxt  = firstStep ? ` ${maneuverLabel(firstStep.type, firstStep.modifier)}${firstStep.name ? ' di ' + firstStep.name : ''}.` : '';
+        speak(`Rute dari ${fromName} ke ${toName}. Jarak ${cumKm.toFixed(1)} kilometer, perkiraan ${cumMin} menit.${altText}${tollText}${fuelTxt}${floodTxt}${firstTxt}`);
 
       } catch (err) {
         console.error("Routing error:", err);
@@ -1713,6 +1751,26 @@ export default function App() {
                 </div>
               )}
 
+              {/* ── Peringatan Zona Banjir di Rute ── */}
+              {floodWarning.length > 0 && (
+                <div style={{ ...S.card, borderColor:'rgba(239,68,68,.4)', background:'rgba(239,68,68,.06)' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+                    <span style={{ fontSize:20 }}>🌊</span>
+                    <div>
+                      <div style={{ fontSize:11, fontWeight:800, color:'#f87171' }}>Peringatan: Zona Rawan Banjir</div>
+                      <div style={{ fontSize:9, color:'#94a3b8', marginTop:1 }}>{floodWarning.length} zona terdeteksi di sepanjang rute</div>
+                    </div>
+                  </div>
+                  {floodWarning.map((z, i) => (
+                    <div key={i} style={{ display:'flex', alignItems:'center', gap:7, fontSize:10, padding:'3px 0', borderTop:'1px solid rgba(255,255,255,.06)' }}>
+                      <span style={{ width:7,height:7,borderRadius:'50%',background:FLOOD_RISK_COLOR[z.risk],flexShrink:0 }} />
+                      <span style={{ color:'#cbd5e1', flex:1 }}>{z.name}</span>
+                      <span style={{ color:FLOOD_RISK_COLOR[z.risk], fontWeight:700, fontSize:9 }}>{FLOOD_RISK_LABEL[z.risk].toUpperCase()}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {/* Selector kendaraan & BBM */}
               <div style={S.card}>
                 <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
@@ -1834,7 +1892,7 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  <button onClick={() => { setRouteSegments([]); setEta(null); setStartPoint(null); setEndPoint(null); setRouteNames(null); setRouteSteps([]); setWaypointETAs([]); setSearchFrom(''); setSearchTo(''); setAltRoutes([]); setActiveRouteIdx(0); setTollEstimate(null); setFuelEstimate(null); setRouteCameras([]); routeCoordsRef.current = []; }}
+                  <button onClick={() => { setRouteSegments([]); setEta(null); setStartPoint(null); setEndPoint(null); setRouteNames(null); setRouteSteps([]); setWaypointETAs([]); setSearchFrom(''); setSearchTo(''); setAltRoutes([]); setActiveRouteIdx(0); setTollEstimate(null); setFuelEstimate(null); setRouteCameras([]); setFloodWarning([]); routeCoordsRef.current = []; }}
                     style={{ marginTop:8, width:'100%', background:'rgba(244,63,94,.1)', border:'1px solid rgba(244,63,94,.25)', borderRadius:7, padding:'6px 0', fontSize:11, color:'#f43f5e', fontWeight:700, cursor:'pointer' }}>
                     ✕ Batalkan Rute
                   </button>
@@ -1990,6 +2048,15 @@ export default function App() {
       visible={showChat}
       onClose={() => setShowChat(false)}
       onMapCommands={executeMapCommands}
+      userContext={{
+        vehicle:      VEHICLE_TYPES.find(v => v.id === vehicleType)?.label ?? 'Mobil',
+        fuel:         FUEL_TYPES.find(f => f.id === fuelType)?.label ?? 'Pertalite',
+        ...(eta ? { route: { from: routeNames?.from, to: routeNames?.to, distance: eta.distance, time: eta.time } } : {}),
+        ...(tollEstimate ? { toll: { total: tollEstimate.total, corridors: tollEstimate.corridors.map(c => c.name) } } : {}),
+        ...(fuelEstimate ? { fuel_cost: { liters: fuelEstimate.liters, cost: fuelEstimate.cost } } : {}),
+        ...(floodWarning.length ? { flood_warning: floodWarning.map(z => ({ name: z.name, risk: z.risk })) } : {}),
+        ...(routeCameras.length ? { route_cameras: routeCameras.slice(0,5).map(c => c.name) } : {}),
+      }}
     />
     <ChatButton onOpen={() => setShowChat(true)} />
     </>

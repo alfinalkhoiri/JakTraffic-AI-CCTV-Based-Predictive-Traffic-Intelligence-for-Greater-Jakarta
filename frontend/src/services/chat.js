@@ -4,7 +4,7 @@ const API = process.env.REACT_APP_API_URL || '';
 // streamMessage — Chat mode: SSE streaming with typewriter effect
 //
 // Returns: AbortController (call .abort() to cancel)
-function streamMessage(message, history = [], onChunk, onDone, onError, onActions) {
+function streamMessage(message, history = [], onChunk, onDone, onError, onActions, userContext = {}) {
   const controller = new AbortController();
 
   (async () => {
@@ -12,7 +12,7 @@ function streamMessage(message, history = [], onChunk, onDone, onError, onAction
       const resp = await fetch(`${API}/api/chat-stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, history }),
+        body: JSON.stringify({ message, history, user_context: userContext }),
         signal: controller.signal,
       });
 
