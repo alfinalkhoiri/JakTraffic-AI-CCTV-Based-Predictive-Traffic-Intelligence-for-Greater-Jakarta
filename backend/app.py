@@ -251,6 +251,35 @@ def sync_current_traffic():
 # Sinkronisasi otomatis saat backend start
 sync_current_traffic()
 
+# ── Camera snapshot proxy cache ────────────────────────────────────────────
+_SNAP_INDEX_CACHE  = {"ts": 0, "data": {}}   # cam_path → latest thumb URL
+_SNAP_IMAGE_CACHE  = {}                        # cam_path → {ts, bytes, ct}
+SNAP_INDEX_TTL     = 30    # detik — refresh URL index
+SNAP_IMAGE_TTL     = 12    # detik — cache bytes gambar
+
+def _refresh_snap_index():
+    """Scrape lewatmana.com/traffic/ untuk mendapatkan URL snapshot terbaru semua kamera."""
+    import re as _re
+    now = time.time()
+    if now - _SNAP_INDEX_CACHE["ts"] < SNAP_INDEX_TTL and _SNAP_INDEX_CACHE["data"]:
+        return _SNAP_INDEX_CACHE["data"]
+    try:
+        resp = requests.get(
+            "https://www.lewatmana.com/traffic/", timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 Chrome/124", "Referer": "https://www.lewatmana.com/"}
+        )
+        pattern = r'https://media\.lewatmana\.com/cam/([^/]+)/(\d+)/([^\s"\'<>]+-thumb\.jpg)'
+        cam_map = {}
+        for cat, cid, fname in _re.findall(pattern, resp.text):
+            cam_map[f"{cat}/{cid}"] = f"https://media.lewatmana.com/cam/{cat}/{cid}/{fname}"
+        if cam_map:
+            _SNAP_INDEX_CACHE["ts"]   = now
+            _SNAP_INDEX_CACHE["data"] = cam_map
+        return cam_map
+    except Exception as e:
+        logger.warning("[snapshot] index refresh failed: %s", e)
+        return _SNAP_INDEX_CACHE["data"]
+
 # ======================================================
 # 🌍 ROUTES
 # ======================================================
@@ -264,6 +293,59 @@ def index():
 @app.route("/api/cctv_status")
 def cctv_status():
     return jsonify(db_handler.get_all_cctv_status())
+
+
+@app.route("/api/cameras-live")
+def cameras_live():
+    """Daftar kamera yang saat ini tersedia dari lewatmana.com."""
+    cam_map = _refresh_snap_index()
+    return jsonify({"cameras": list(cam_map.keys()), "count": len(cam_map)})
+
+
+@app.route("/api/camera-snapshot/<path:cam_path>")
+def camera_snapshot(cam_path):
+    """
+    Proxy snapshot terbaru dari lewatmana.com.
+    cam_path contoh: lintek/192  atau  kotabekasi/366
+    """
+    from flask import send_file
+    import io
+
+    now = time.time()
+
+    # Cek cache gambar
+    cached = _SNAP_IMAGE_CACHE.get(cam_path)
+    if cached and now - cached["ts"] < SNAP_IMAGE_TTL:
+        resp = app.response_class(cached["data"], mimetype="image/jpeg")
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Cache-Control"]               = f"public, max-age={SNAP_IMAGE_TTL}"
+        return resp
+
+    # Ambil URL snapshot terbaru dari index
+    cam_map  = _refresh_snap_index()
+    thumb_url = cam_map.get(cam_path)
+
+    if not thumb_url:
+        return jsonify({"error": "camera not in index", "available": list(cam_map.keys())}), 404
+
+    try:
+        img_r = requests.get(
+            thumb_url, timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 Chrome/124",
+                     "Referer": "https://www.lewatmana.com/"}
+        )
+        if img_r.status_code != 200:
+            return jsonify({"error": f"upstream {img_r.status_code}"}), 502
+
+        _SNAP_IMAGE_CACHE[cam_path] = {"ts": now, "data": img_r.content}
+        resp = app.response_class(img_r.content, mimetype="image/jpeg")
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Cache-Control"]               = f"public, max-age={SNAP_IMAGE_TTL}"
+        return resp
+
+    except Exception as e:
+        logger.error("[snapshot] fetch failed %s: %s", cam_path, e)
+        return jsonify({"error": str(e)}), 502
 
 # ======================================================
 # 🕐 SIMULASI: SET/GET WAKTU SIMULASI

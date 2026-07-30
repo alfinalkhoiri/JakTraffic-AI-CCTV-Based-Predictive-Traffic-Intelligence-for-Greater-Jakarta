@@ -2,7 +2,62 @@ import React, { useRef, useEffect, useCallback, useState } from "react";
 import Hls from "hls.js";
 
 const WORKER_URL = process.env.REACT_APP_CCTV_PROXY || "";
-const API = process.env.REACT_APP_API_URL || "";
+const API        = process.env.REACT_APP_API_URL || "";
+
+/* ── Snapshot viewer — refresh setiap SNAP_INTERVAL detik ── */
+const SNAP_INTERVAL = 15000;
+
+function SnapshotPreview({ snapPath, onStatusChange }) {
+  const [src, setSrc]       = useState(null);
+  const [ts,  setTs]        = useState(Date.now());
+  const [err, setErr]       = useState(false);
+  const timerRef            = useRef(null);
+
+  const buildUrl = () => `${API}/api/camera-snapshot/${snapPath}?_=${Date.now()}`;
+
+  useEffect(() => {
+    setSrc(buildUrl());
+    setErr(false);
+    onStatusChange?.("loading");
+    timerRef.current = setInterval(() => { setSrc(buildUrl()); setErr(false); }, SNAP_INTERVAL);
+    return () => clearInterval(timerRef.current);
+  }, [snapPath]);
+
+  return (
+    <div style={{ position:"relative", height:155, background:"linear-gradient(135deg,#0c1a2e,#0f172a)", overflow:"hidden" }}>
+      <div style={{ position:"absolute", inset:0, backgroundImage:"linear-gradient(rgba(56,189,248,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(56,189,248,.04) 1px,transparent 1px)", backgroundSize:"20px 20px" }} />
+      {!err && src && (
+        <img
+          src={src}
+          alt="CCTV"
+          onLoad={() => { setErr(false); onStatusChange?.("live"); }}
+          onError={() => { setErr(true); onStatusChange?.("offline"); }}
+          style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover" }}
+        />
+      )}
+      {err && (
+        <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:6 }}>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#334155" strokeWidth="1.2" strokeLinecap="round">
+            <path d="M15 10l4.553-2.069A1 1 0 0121 8.87V15.13a1 1 0 01-1.447.899L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/>
+            <line x1="3" y1="3" x2="21" y2="21" stroke="#475569" strokeWidth="1.2"/>
+          </svg>
+          <p style={{ fontSize:10, color:"#475569", margin:0 }}>Snapshot tidak tersedia</p>
+        </div>
+      )}
+      {/* Live badge */}
+      {!err && src && (
+        <div style={{ position:"absolute", top:8, left:8, background:"rgba(16,185,129,.9)", borderRadius:999, padding:"2px 8px", display:"flex", alignItems:"center", gap:4 }}>
+          <span style={{ width:5, height:5, borderRadius:"50%", background:"white", animation:"pulse 1.5s infinite" }} />
+          <span style={{ fontSize:9, color:"white", fontWeight:700 }}>📸 LIVE</span>
+        </div>
+      )}
+      <div style={{ position:"absolute", top:8, right:8, fontSize:8, color:"rgba(255,255,255,.35)", background:"rgba(0,0,0,.4)", borderRadius:3, padding:"1px 5px" }}>
+        Refresh /{SNAP_INTERVAL/1000}s
+      </div>
+      <div style={{ position:"absolute", bottom:0, left:0, right:0, height:40, background:"linear-gradient(to top,rgba(15,23,42,.95),transparent)", pointerEvents:"none" }} />
+    </div>
+  );
+}
 
 const SIG = (v) => {
   if (v > 40) return { light: "green",  green: 90, red: 30,  label: "Perpanjang Hijau",   color: "#ef4444" };
@@ -237,6 +292,9 @@ function resolveStatus(camStatus, vehicles) {
 }
 
 export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showSignalRec = false }) {
+  const isSnapUrl     = cam.preview_url?.startsWith("__snap__:");
+  const snapPath      = isSnapUrl ? cam.preview_url.replace("__snap__:", "") : null;
+
   // "loading" → belum tahu, "live" → stream berhasil, "offline" → gagal
   const [streamStatus, setStreamStatus] = useState("loading");
   const [yoloLiveCount, setYoloLiveCount] = useState(null);
@@ -258,12 +316,11 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
 
   return (
     <div style={{ width: 270, fontFamily: "Inter, sans-serif", borderRadius: 12, overflow: "hidden", background: "#1e293b" }}>
-      {/* Preview */}
-      <LivePreview
-        previewUrl={cam.preview_url}
-        onStatusChange={setStreamStatus}
-        onYoloResult={setYoloLiveCount}
-      />
+      {/* Preview — snapshot atau HLS stream */}
+      {snapPath
+        ? <SnapshotPreview snapPath={snapPath} onStatusChange={setStreamStatus} />
+        : <LivePreview previewUrl={cam.preview_url} onStatusChange={setStreamStatus} onYoloResult={setYoloLiveCount} />
+      }
 
       {/* Status strip */}
       <div style={{ background: statusColor + "22", borderBottom: `1px solid ${statusColor}40`, padding: "5px 12px", display: "flex", alignItems: "center", gap: 6 }}>
