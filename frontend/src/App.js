@@ -543,9 +543,9 @@ export default function App() {
   const [predictionData, setPredictionData] = useState(null);
   const [showChat, setShowChat] = useState(false);
 
-  // Route/CCTV filter mode: "all" | "city" | "toll"
-  const [routeMode, setRouteMode]   = useState("all");
-  const [cameraArea, setCameraArea] = useState("all"); // wilayah: all|pusat|utara|barat|timur|selatan|bekasi
+  // Route/CCTV filter mode: "all" | "city" | "toll" — persisted by operator via Admin
+  const [routeMode, setRouteMode]   = useState(() => localStorage.getItem('jak_routeMode')  || "all");
+  const [cameraArea, setCameraArea] = useState(() => localStorage.getItem('jak_cameraArea') || "all");
 
   const AREA_FILTERS = {
     pusat:   c => c.lat < -6.16 && c.lat > -6.24 && c.lng > 106.81 && c.lng < 106.87 && c.road_type !== 'toll',
@@ -1775,39 +1775,6 @@ export default function App() {
                 <TrendingUp size={9} /> Prediksi Transformer AI — {predictionMode} menit ke depan
               </div>
             )}
-          </div>
-
-          {/* ——— FILTER RUTE ——— */}
-          <div style={S.card}>
-            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
-              <div style={S.label}>Filter Kamera</div>
-              <a href="/nvr" style={{ fontSize:9, color:'#38bdf8', textDecoration:'none', background:'rgba(56,189,248,.1)', border:'1px solid rgba(56,189,248,.2)', borderRadius:5, padding:'2px 7px', fontWeight:700 }}>
-                📹 Grid View
-              </a>
-            </div>
-            <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
-              {[{l:'🗺️ Semua', v:'all'},{l:'🏙️ Kota', v:'city'},{l:'🛣️ Tol', v:'toll'}].map(o => (
-                <button key={o.v} onClick={() => setRouteMode(o.v)} style={S.btnSm(routeMode===o.v,'#f59e0b')}>{o.l}</button>
-              ))}
-            </div>
-            {/* Wilayah filter */}
-            <div style={{ display:'flex', gap:4, flexWrap:'wrap', marginTop:6 }}>
-              {[
-                { l:'Semua', id:'all',     fn: null },
-                { l:'Jakpus', id:'pusat',  fn: c => c.lat < -6.16 && c.lat > -6.24 && c.lng > 106.81 && c.lng < 106.87 && c.road_type !== 'toll' },
-                { l:'Jakut',  id:'utara',  fn: c => c.lat > -6.17 && c.lng < 106.93 && c.road_type !== 'toll' },
-                { l:'Jakbar', id:'barat',  fn: c => c.lng < 106.80 && c.lat > -6.30 && c.road_type !== 'toll' },
-                { l:'Jaktim', id:'timur',  fn: c => c.lng > 106.87 && c.lat > -6.27 && c.lat < -6.16 && c.road_type !== 'toll' },
-                { l:'Jaksel', id:'selatan',fn: c => c.lat < -6.27 && c.road_type !== 'toll' },
-                { l:'Bekasi', id:'bekasi', fn: c => c.lng > 106.96 },
-              ].map(o => (
-                <button key={o.id}
-                  onClick={() => setCameraArea(o.id)}
-                  style={{ ...S.btnSm(cameraArea===o.id,'#22d3ee'), fontSize:9, padding:'2px 7px' }}>
-                  {o.l}
-                </button>
-              ))}
-            </div>
           </div>
 
           {/* ——— SELECTED CCTV DETAIL ——— */}

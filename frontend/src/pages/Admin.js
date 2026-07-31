@@ -189,6 +189,20 @@ export default function Admin() {
   const [modelInfo, setModelInfo] = useState(null);
   const [showChat, setShowChat] = useState(false);
 
+  // Filter kamera (persisted to localStorage for map page)
+  const [routeFilter, setRouteFilter] = useState(() => localStorage.getItem('jak_routeMode')  || 'all');
+  const [areaFilter,  setAreaFilter]  = useState(() => localStorage.getItem('jak_cameraArea') || 'all');
+  const [filterSaved, setFilterSaved] = useState(false);
+
+  const applyFilter = (newRoute, newArea) => {
+    const r = newRoute ?? routeFilter;
+    const a = newArea  ?? areaFilter;
+    localStorage.setItem('jak_routeMode',  r);
+    localStorage.setItem('jak_cameraArea', a);
+    setFilterSaved(true);
+    setTimeout(() => setFilterSaved(false), 2000);
+  };
+
   // YOLO upload
   const [detectFile, setDetectFile] = useState(null);
   const [detectResult, setDetectResult] = useState(null);
@@ -394,11 +408,12 @@ export default function Admin() {
         {/* Navigation */}
         <nav style={A.sideNav}>
           {[
-            { id:'monitor', icon:'📡', label:'Monitoring', desc:'Status real-time' },
-            { id:'analitik', icon:'📊', label:'Analitik', desc:'Tren & histori' },
-            { id:'sinyal', icon:'🚦', label:'Sinyal Adaptif', desc:'Rekomendasi' },
-            { id:'ai', icon:'🤖', label:'AI Deteksi', desc:'YOLO & model' },
-            { id:'manajemen', icon:'🗄️', label:'Manajemen', desc:'Data kamera' },
+            { id:'monitor',   icon:'📡', label:'Monitoring',    desc:'Status real-time' },
+            { id:'analitik',  icon:'📊', label:'Analitik',      desc:'Tren & histori' },
+            { id:'sinyal',    icon:'🚦', label:'Sinyal Adaptif',desc:'Rekomendasi' },
+            { id:'ai',        icon:'🤖', label:'AI Deteksi',    desc:'YOLO & model' },
+            { id:'manajemen', icon:'🗄️', label:'Manajemen',     desc:'Data kamera' },
+            { id:'kamera',    icon:'📹', label:'Filter Kamera', desc:'Wilayah & jenis' },
           ].map(item => (
             <div key={item.id} style={A.navItem(activeTab===item.id)} onClick={() => setActiveTab(item.id)}>
               <span style={{ fontSize:15 }}>{item.icon}</span>
@@ -940,6 +955,115 @@ export default function Admin() {
               </div>
             </div>
           )}
+
+          {/* ══ TAB: FILTER KAMERA ════════════════════════════════ */}
+          {activeTab === 'kamera' && (() => {
+            const ROUTE_OPTS = [
+              { v:'all',  l:'🗺️ Semua',       desc:'Tampilkan semua kamera kota & tol' },
+              { v:'city', l:'🏙️ Kota saja',   desc:'Filter hanya kamera jalan perkotaan' },
+              { v:'toll', l:'🛣️ Tol saja',    desc:'Filter hanya kamera ruas tol' },
+            ];
+            const AREA_OPTS = [
+              { id:'all',     l:'Semua Wilayah', color:'#f59e0b' },
+              { id:'pusat',   l:'Jakarta Pusat', color:'#60a5fa' },
+              { id:'utara',   l:'Jakarta Utara', color:'#34d399' },
+              { id:'barat',   l:'Jakarta Barat', color:'#a78bfa' },
+              { id:'timur',   l:'Jakarta Timur', color:'#fb923c' },
+              { id:'selatan', l:'Jakarta Selatan',color:'#f472b6' },
+              { id:'bekasi',  l:'Bekasi',         color:'#22d3ee' },
+            ];
+
+            const AREA_FNS = {
+              pusat:   c => c.lat < -6.16 && c.lat > -6.24 && c.lng > 106.81 && c.lng < 106.87 && c.road_type !== 'toll',
+              utara:   c => c.lat > -6.17 && c.lng < 106.93 && c.road_type !== 'toll',
+              barat:   c => c.lng < 106.80 && c.lat > -6.30 && c.road_type !== 'toll',
+              timur:   c => c.lng > 106.87 && c.lat > -6.27 && c.lat < -6.16 && c.road_type !== 'toll',
+              selatan: c => c.lat < -6.27 && c.road_type !== 'toll',
+              bekasi:  c => c.lng > 106.96,
+            };
+
+            const countForArea = (id) => {
+              if (id === 'all') return cctvList.length;
+              const fn = AREA_FNS[id];
+              return fn ? cctvList.filter(fn).length : 0;
+            };
+            const countForRoute = (v) => {
+              if (v === 'all') return cctvList.length;
+              return cctvList.filter(c => (c.road_type||'city') === v).length;
+            };
+
+            return (
+              <div style={{ display:'flex', flexDirection:'column', gap:16, maxWidth:700 }}>
+                {/* Header card */}
+                <div style={A.card}>
+                  <div style={A.cardHdr('#38bdf8')}>
+                    <span style={{ fontSize:12, fontWeight:700, color:'#7dd3fc' }}>📹 Filter Kamera — Tampilan Peta</span>
+                    <a href="/" target="_blank" rel="noreferrer"
+                      style={{ marginLeft:'auto', fontSize:10, color:'#38bdf8', textDecoration:'none', background:'rgba(56,189,248,.1)', border:'1px solid rgba(56,189,248,.25)', borderRadius:6, padding:'4px 10px', fontWeight:700 }}>
+                      Buka Peta →
+                    </a>
+                  </div>
+                  <div style={{ padding:'12px 16px', fontSize:11, color:'#64748b', lineHeight:1.6 }}>
+                    Filter ini mengatur kamera CCTV yang tampil di halaman peta utama.
+                    Pengaturan disimpan otomatis dan berlaku saat operator membuka peta.
+                  </div>
+                </div>
+
+                {/* Jenis Jalan */}
+                <div style={A.card}>
+                  <div style={A.cardHdr('#f59e0b')}>
+                    <span style={{ fontSize:11, fontWeight:700, color:'#fbbf24' }}>🛣️ Filter Jenis Jalan</span>
+                    <span style={{ marginLeft:'auto', fontSize:9, color:'#64748b' }}>Aktif: <b style={{ color:'#fbbf24' }}>{ROUTE_OPTS.find(o=>o.v===routeFilter)?.l}</b></span>
+                  </div>
+                  <div style={{ padding:16, display:'flex', flexDirection:'column', gap:8 }}>
+                    {ROUTE_OPTS.map(o => (
+                      <div key={o.v}
+                        onClick={() => { setRouteFilter(o.v); applyFilter(o.v, null); }}
+                        style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 14px', borderRadius:8, cursor:'pointer', border: routeFilter===o.v ? '1px solid rgba(245,158,11,.5)' : '1px solid rgba(255,255,255,.06)', background: routeFilter===o.v ? 'rgba(245,158,11,.1)' : 'rgba(255,255,255,.02)', transition:'all .15s' }}>
+                        <div style={{ width:16, height:16, borderRadius:'50%', border: routeFilter===o.v ? '5px solid #f59e0b' : '2px solid #374151', transition:'all .15s', flexShrink:0 }} />
+                        <div>
+                          <div style={{ fontSize:12, fontWeight:700, color: routeFilter===o.v ? '#fbbf24' : '#94a3b8' }}>{o.l}</div>
+                          <div style={{ fontSize:10, color:'#475569' }}>{o.desc} — <b style={{ color:'#64748b' }}>{countForRoute(o.v)} kamera</b></div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Wilayah */}
+                <div style={A.card}>
+                  <div style={A.cardHdr('#22d3ee')}>
+                    <span style={{ fontSize:11, fontWeight:700, color:'#67e8f9' }}>🗺️ Filter Wilayah</span>
+                    <span style={{ marginLeft:'auto', fontSize:9, color:'#64748b' }}>Aktif: <b style={{ color:'#22d3ee' }}>{AREA_OPTS.find(o=>o.id===areaFilter)?.l}</b></span>
+                  </div>
+                  <div style={{ padding:16, display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+                    {AREA_OPTS.map(o => (
+                      <div key={o.id}
+                        onClick={() => { setAreaFilter(o.id); applyFilter(null, o.id); }}
+                        style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 14px', borderRadius:8, cursor:'pointer', border: areaFilter===o.id ? `1px solid ${o.color}55` : '1px solid rgba(255,255,255,.06)', background: areaFilter===o.id ? `${o.color}18` : 'rgba(255,255,255,.02)', transition:'all .15s' }}>
+                        <div>
+                          <div style={{ fontSize:11, fontWeight:700, color: areaFilter===o.id ? o.color : '#94a3b8' }}>{o.l}</div>
+                          <div style={{ fontSize:9, color:'#475569', marginTop:2 }}>{countForArea(o.id)} kamera</div>
+                        </div>
+                        {areaFilter===o.id && <span style={{ fontSize:14 }}>✓</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Status + links */}
+                <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+                  <div style={{ flex:1, padding:'10px 16px', borderRadius:9, background: filterSaved ? 'rgba(16,185,129,.1)' : 'rgba(255,255,255,.04)', border: filterSaved ? '1px solid rgba(16,185,129,.3)' : '1px solid rgba(255,255,255,.06)', fontSize:11, color: filterSaved ? '#10b981' : '#475569', fontWeight:600, transition:'all .3s', textAlign:'center' }}>
+                    {filterSaved ? '✅ Filter berhasil disimpan ke peta!' : 'Klik opsi di atas untuk mengubah filter'}
+                  </div>
+                  <a href="/nvr" target="_blank" rel="noreferrer"
+                    style={{ padding:'10px 18px', borderRadius:9, background:'rgba(56,189,248,.1)', border:'1px solid rgba(56,189,248,.25)', color:'#38bdf8', fontSize:11, fontWeight:700, textDecoration:'none', flexShrink:0 }}>
+                    📹 Buka NVR Grid
+                  </a>
+                </div>
+              </div>
+            );
+          })()}
 
         </div> {/* end content */}
       </div> {/* end main */}
