@@ -954,9 +954,11 @@ export default function App() {
 
   const filteredCctv = cctv
     .filter(c => c.lat != null && c.lng != null)
-    .filter(c => routeMode === "all" || (c.road_type || "city") === routeMode)
-    // Kamera tol selalu lolos filter area (mereka punya routeMode "toll" sendiri).
-    // Filter area hanya berlaku untuk kamera kota.
+    // routeMode='toll' → hanya tampilkan kamera tol (mode monitoring tol)
+    // routeMode='city' atau 'all' → tampilkan semua kamera (tol tetap muncul)
+    // routeMode hanya mengontrol algoritma rute, bukan visibilitas dasar kamera tol
+    .filter(c => routeMode !== 'toll' || c.road_type === 'toll')
+    // Filter area hanya berlaku untuk kamera kota; kamera tol selalu lolos
     .filter(c => cameraArea === "all" || c.road_type === 'toll' || (AREA_FILTERS[cameraArea]?.(c) ?? true));
 
   /* ================= TOLL ROAD CORRIDOR OVERLAY ================= */
