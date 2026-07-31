@@ -242,12 +242,14 @@ def gpu_scan_job():
             count = vdet.get_vehicle_count(cam["stream_url"], cam["id"])
             if count is None:
                 return
-            # Estimasi kecepatan paralel dengan hitungan kendaraan
+            # Estimasi kecepatan hanya jika ada ≥2 kendaraan
+            # (optical flow mengukur noise kamera saat jalan kosong → hasil tidak valid)
             speed = None
-            try:
-                speed = vdet.estimate_speed(cam["stream_url"], cam["id"])
-            except Exception:
-                pass
+            if count >= 2:
+                try:
+                    speed = vdet.estimate_speed(cam["stream_url"], cam["id"])
+                except Exception:
+                    pass
             weather_text = "Cerah"
             new_status, _ = calculate_decision(count, weather_text)
             risk = min(60 if count > 40 else (20 if count >= 20 else 0), 100)
@@ -2472,12 +2474,12 @@ def camera_speed(cam_id):
     """
     import core.detector as det
 
-    # Ambil stream_url kamera
+    # Ambil stream_url kamera + jumlah kendaraan saat ini
     try:
         conn = db_handler.get_db_connection()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
-            "SELECT stream_url, speed_kmh, last_gpu_scan FROM current_traffic WHERE id=%s",
+            "SELECT stream_url, speed_kmh, last_gpu_scan, vehicles FROM current_traffic WHERE id=%s",
             (cam_id,)
         )
         row = cur.fetchone()
@@ -2503,6 +2505,11 @@ def camera_speed(cam_id):
     stream_url = row.get("stream_url")
     if not stream_url:
         return jsonify({"error": "Kamera tidak memiliki stream URL (bukan JTD)"}), 400
+
+    # Jangan ukur kecepatan jika kendaraan < 2 (optical flow tidak valid saat jalan kosong)
+    vehicles = row.get("vehicles") or 0
+    if vehicles < 2:
+        return jsonify({"error": "Kendaraan tidak cukup untuk estimasi kecepatan", "vehicles": vehicles}), 422
 
     # Hitung on-demand
     try:
