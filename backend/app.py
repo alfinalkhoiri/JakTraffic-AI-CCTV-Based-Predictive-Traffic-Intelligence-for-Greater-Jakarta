@@ -258,27 +258,29 @@ SNAP_INDEX_TTL     = 30    # detik — refresh URL index
 SNAP_IMAGE_TTL     = 12    # detik — cache bytes gambar
 
 def _refresh_snap_index():
-    """Scrape lewatmana.com/traffic/ untuk mendapatkan URL snapshot terbaru semua kamera."""
+    """Scrape lewatmana.com homepage untuk URL snapshot terbaru semua kamera."""
     import re as _re
     now = time.time()
     if now - _SNAP_INDEX_CACHE["ts"] < SNAP_INDEX_TTL and _SNAP_INDEX_CACHE["data"]:
         return _SNAP_INDEX_CACHE["data"]
-    try:
-        resp = requests.get(
-            "https://www.lewatmana.com/traffic/", timeout=10,
-            headers={"User-Agent": "Mozilla/5.0 Chrome/124", "Referer": "https://www.lewatmana.com/"}
-        )
-        pattern = r'https://media\.lewatmana\.com/cam/([^/]+)/(\d+)/([^\s"\'<>]+-thumb\.jpg)'
-        cam_map = {}
-        for cat, cid, fname in _re.findall(pattern, resp.text):
-            cam_map[f"{cat}/{cid}"] = f"https://media.lewatmana.com/cam/{cat}/{cid}/{fname}"
-        if cam_map:
-            _SNAP_INDEX_CACHE["ts"]   = now
-            _SNAP_INDEX_CACHE["data"] = cam_map
-        return cam_map
-    except Exception as e:
-        logger.warning("[snapshot] index refresh failed: %s", e)
-        return _SNAP_INDEX_CACHE["data"]
+    # /traffic/ redirects to homepage — use homepage directly
+    for url in ["https://lewatmana.com/", "https://www.lewatmana.com/"]:
+        try:
+            resp = requests.get(url, timeout=10, allow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                         "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
+            pattern = r'media\.lewatmana\.com/cam/([^/]+)/(\d+)/([^\s"\'<>]+-thumb\.jpg)'
+            cam_map = {}
+            for cat, cid, fname in _re.findall(pattern, resp.text):
+                cam_map[f"{cat}/{cid}"] = f"https://media.lewatmana.com/cam/{cat}/{cid}/{fname}"
+            if cam_map:
+                _SNAP_INDEX_CACHE["ts"]   = now
+                _SNAP_INDEX_CACHE["data"] = cam_map
+                logger.info("[snapshot] index refreshed: %d cameras from %s", len(cam_map), url)
+                return cam_map
+        except Exception as e:
+            logger.warning("[snapshot] index refresh failed (%s): %s", url, e)
+    return _SNAP_INDEX_CACHE["data"]
 
 # ======================================================
 # 🌍 ROUTES

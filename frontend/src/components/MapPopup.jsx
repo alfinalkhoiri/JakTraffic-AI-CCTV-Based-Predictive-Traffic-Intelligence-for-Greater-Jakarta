@@ -294,6 +294,8 @@ function resolveStatus(camStatus, vehicles) {
 export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showSignalRec = false }) {
   const isSnapUrl     = cam.preview_url?.startsWith("__snap__:");
   const snapPath      = isSnapUrl ? cam.preview_url.replace("__snap__:", "") : null;
+  // stream_url takes priority for live HLS; preview_url fallback (balitower etc.)
+  const liveUrl       = cam.stream_url || (isSnapUrl ? null : cam.preview_url) || null;
 
   // "loading" → belum tahu, "live" → stream berhasil, "offline" → gagal
   const [streamStatus, setStreamStatus] = useState("loading");
@@ -319,7 +321,7 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
       {/* Preview — snapshot atau HLS stream */}
       {snapPath
         ? <SnapshotPreview snapPath={snapPath} onStatusChange={setStreamStatus} />
-        : <LivePreview previewUrl={cam.preview_url} onStatusChange={setStreamStatus} onYoloResult={setYoloLiveCount} />
+        : <LivePreview previewUrl={liveUrl} onStatusChange={setStreamStatus} onYoloResult={setYoloLiveCount} />
       }
 
       {/* Status strip */}
