@@ -322,6 +322,15 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
     }
   }, [cam.id]); // cam.id adalah satu-satunya dep yang bermakna di sini
 
+  // Sparkline — history 30 menit terakhir, dikelompokkan per menit
+  const [sparkData, setSparkData] = useState(null);
+  useEffect(() => {
+    fetch(`${API}/api/traffic-history/${cam.id}?range=30m`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (Array.isArray(d) && d.length >= 2) setSparkData(d); })
+      .catch(() => {});
+  }, [cam.id]);
+
   const speedColor = speed === null ? null
     : speed < 15 ? '#ef4444'
     : speed < 35 ? '#f97316'
@@ -417,7 +426,48 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
         {isToll && (
           <p style={{ fontSize: 9, color: "#f59e0b", fontWeight: 700, textTransform: "uppercase", margin: "0 0 3px" }}>🛣️ JALAN TOL</p>
         )}
-        <p style={{ fontSize: 14, fontWeight: 700, color: "white", margin: "0 0 8px", lineHeight: 1.3 }}>{cam.name}</p>
+        <p style={{ fontSize: 14, fontWeight: 700, color: "white", margin: "0 0 6px", lineHeight: 1.3 }}>{cam.name}</p>
+
+        {/* Sparkline — tren 15 menit terakhir */}
+        {sparkData && sparkData.length >= 2 && (() => {
+          const vals = sparkData.map(d => Math.round(d.avg_vehicle ?? d.vehicles ?? 0));
+          const W = 246, H = 36, PAD = 2;
+          const maxV = Math.max(...vals, 1);
+          const minV = Math.min(...vals);
+          const pts = vals.map((v, i) => {
+            const x = PAD + (i / (vals.length - 1)) * (W - PAD * 2);
+            const y = PAD + (1 - (v - minV) / (maxV - minV || 1)) * (H - PAD * 2);
+            return `${x.toFixed(1)},${y.toFixed(1)}`;
+          });
+          const areaPts = [`${PAD},${H}`, ...pts, `${(W - PAD).toFixed(1)},${H}`].join(' ');
+          const last = vals[vals.length - 1];
+          const prev = vals[vals.length - 2];
+          const trend = last > prev + 2 ? '↑' : last < prev - 2 ? '↓' : '→';
+          const trendColor = trend === '↑' ? '#ef4444' : trend === '↓' ? '#22c55e' : '#94a3b8';
+          const sparkColor = last > 30 ? '#ef4444' : last > 15 ? '#f97316' : '#22c55e';
+          return (
+            <div style={{ background: '#0f172a', borderRadius: 8, padding: '6px 8px', marginBottom: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
+                <span style={{ fontSize: 9, color: '#64748b', fontWeight: 600 }}>15 MENIT TERAKHIR</span>
+                <span style={{ fontSize: 11, color: trendColor, fontWeight: 800 }}>
+                  {trend} {last} kend
+                </span>
+              </div>
+              <svg width={W} height={H} style={{ display: 'block', overflow: 'visible' }}>
+                <defs>
+                  <linearGradient id={`sg${cam.id}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={sparkColor} stopOpacity="0.3" />
+                    <stop offset="100%" stopColor={sparkColor} stopOpacity="0.03" />
+                  </linearGradient>
+                </defs>
+                <polygon points={areaPts} fill={`url(#sg${cam.id})`} />
+                <polyline points={pts.join(' ')} fill="none" stroke={sparkColor} strokeWidth="1.5" strokeLinejoin="round" />
+                {/* Dot titik terakhir */}
+                <circle cx={pts[pts.length-1].split(',')[0]} cy={pts[pts.length-1].split(',')[1]} r="3" fill={sparkColor} />
+              </svg>
+            </div>
+          );
+        })()}
 
         {/* Signal recommendation — hanya tampil untuk operator (showSignalRec=true) */}
         {showSignalRec && (cam.has_signal ? (

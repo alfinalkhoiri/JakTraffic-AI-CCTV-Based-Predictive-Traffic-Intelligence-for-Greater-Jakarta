@@ -826,6 +826,33 @@ export default function App() {
   useEffect(() => { if (!startPoint) setSearchFrom(''); }, [startPoint]);
   useEffect(() => { if (!endPoint)   setSearchTo('');   }, [endPoint]);
 
+  /* ================= NOTIFIKASI KEMACETAN (GPU Scanner) ================= */
+  const prevCctvStatusRef  = useRef({});    // id → status sebelumnya
+  const congestionCooldown = useRef({});    // id → last notif timestamp
+
+  const checkCongestionAlerts = (newData) => {
+    if (!notifEnabled) return;
+    const now = Date.now();
+    newData.forEach(cam => {
+      const prevStatus = prevCctvStatusRef.current[cam.id];
+      const isRed  = ['MERAH', 'PADAT'].includes((cam.status || '').toUpperCase());
+      const wasRed = ['MERAH', 'PADAT'].includes((prevStatus || '').toUpperCase());
+      const lastNotif = congestionCooldown.current[cam.id] || 0;
+      if (isRed && !wasRed && (now - lastNotif) > 5 * 60 * 1000) {
+        congestionCooldown.current[cam.id] = now;
+        try {
+          const n = new Notification('🔴 Kemacetan Terdeteksi', {
+            body: `${cam.name}  ·  ${cam.vehicles} kendaraan`,
+            icon: '/favicon.ico',
+            tag: `jak-cong-${cam.id}`,
+          });
+          n.onclick = () => window.focus();
+        } catch (_) {}
+      }
+      prevCctvStatusRef.current[cam.id] = cam.status;
+    });
+  };
+
   /* ================= WEBSOCKET ================= */
   useEffect(() => {
     const base = process.env.REACT_APP_API_URL || window.location.origin;
@@ -839,12 +866,13 @@ export default function App() {
     socket.on('disconnect', ()     => setWsConnected(false));
     socket.on('traffic_update', (data) => {
       if (Array.isArray(data)) {
+        checkCongestionAlerts(data);
         setCctv(data);
         cctvRef.current = data;
       }
     });
     return () => socket.disconnect();
-  }, []);
+  }, [notifEnabled]); // notifEnabled digunakan di checkCongestionAlerts
 
   // Persistensi pilihan kendaraan & BBM
   useEffect(() => { localStorage.setItem('jak_vehicle', vehicleType); }, [vehicleType]);
@@ -927,7 +955,9 @@ export default function App() {
   const filteredCctv = cctv
     .filter(c => c.lat != null && c.lng != null)
     .filter(c => routeMode === "all" || (c.road_type || "city") === routeMode)
-    .filter(c => cameraArea === "all" || (AREA_FILTERS[cameraArea]?.(c) ?? true));
+    // Kamera tol selalu lolos filter area (mereka punya routeMode "toll" sendiri).
+    // Filter area hanya berlaku untuk kamera kota.
+    .filter(c => cameraArea === "all" || c.road_type === 'toll' || (AREA_FILTERS[cameraArea]?.(c) ?? true));
 
   /* ================= TOLL ROAD CORRIDOR OVERLAY ================= */
   useEffect(() => {
