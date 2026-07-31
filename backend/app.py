@@ -2467,6 +2467,65 @@ def gpu_scan_now():
     return jsonify({"ok": True, "message": "GPU scan triggered"})
 
 
+YOLO_MODEL_DIR  = os.path.join(os.path.dirname(__file__), "models")
+YOLO_MODEL_PATH = os.path.join(YOLO_MODEL_DIR, "jaktraffic_yolo.pt")
+YOLO_META_PATH  = os.path.join(YOLO_MODEL_DIR, "jaktraffic_yolo_meta.json")
+os.makedirs(YOLO_MODEL_DIR, exist_ok=True)
+
+UPLOAD_TOKEN = os.getenv("MODEL_UPLOAD_TOKEN", "jaktraffic2026")
+
+@app.route("/api/yolo-model/upload", methods=["POST"])
+def yolo_model_upload():
+    """Terima model YOLO fine-tuned dari Colab / sumber lain."""
+    token = request.headers.get("X-Upload-Token") or request.form.get("token", "")
+    if token != UPLOAD_TOKEN:
+        return jsonify({"error": "Unauthorized"}), 401
+    if "model" not in request.files:
+        return jsonify({"error": "Field 'model' tidak ada"}), 400
+    f = request.files["model"]
+    if not f.filename.endswith(".pt"):
+        return jsonify({"error": "Harus file .pt"}), 400
+    f.save(YOLO_MODEL_PATH)
+    size_mb = round(os.path.getsize(YOLO_MODEL_PATH) / 1e6, 2)
+    meta = {
+        "uploaded_at": datetime.now().isoformat(),
+        "filename": f.filename,
+        "size_mb": size_mb,
+        "classes": request.form.get("classes", ""),
+        "map50": request.form.get("map50", ""),
+    }
+    with open(YOLO_META_PATH, "w") as mf:
+        json.dump(meta, mf)
+    logger.info("[YOLO Upload] Model diterima: %s (%.1f MB)", f.filename, size_mb)
+    return jsonify({"ok": True, "size_mb": size_mb, "path": YOLO_MODEL_PATH})
+
+@app.route("/api/yolo-model/download")
+def yolo_model_download():
+    """GPU server download model terbaru."""
+    if not os.path.exists(YOLO_MODEL_PATH):
+        return jsonify({"error": "Model belum diupload"}), 404
+    from flask import send_file
+    return send_file(YOLO_MODEL_PATH, as_attachment=True,
+                     download_name="jaktraffic_yolo.pt",
+                     mimetype="application/octet-stream")
+
+@app.route("/api/yolo-model/info")
+def yolo_model_info():
+    """Status model YOLO yang tersimpan di backend."""
+    if not os.path.exists(YOLO_MODEL_PATH):
+        return jsonify({"available": False})
+    meta = {}
+    if os.path.exists(YOLO_META_PATH):
+        with open(YOLO_META_PATH) as mf:
+            meta = json.load(mf)
+    return jsonify({
+        "available": True,
+        "size_mb": round(os.path.getsize(YOLO_MODEL_PATH) / 1e6, 2),
+        **meta,
+        "download_url": "/api/yolo-model/download",
+    })
+
+
 @app.route("/api/camera-speed/<int:cam_id>")
 def camera_speed(cam_id):
     """Estimasi kecepatan kendaraan on-demand untuk satu kamera via optical flow.
