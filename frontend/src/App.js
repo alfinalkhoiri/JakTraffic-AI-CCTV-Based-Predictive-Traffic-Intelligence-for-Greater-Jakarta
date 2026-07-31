@@ -303,8 +303,25 @@ L.Icon.Default.mergeOptions({
   shadowUrl: require("leaflet/dist/images/marker-shadow.png"),
 });
 
+/* ── helper: apakah last_gpu_scan masih segar (< 90 detik) ── */
+const isGpuFresh = (lastGpuScan) => {
+  if (!lastGpuScan) return false;
+  const age = (Date.now() - new Date(lastGpuScan).getTime()) / 1000;
+  return age < 90;
+};
+
+/* ── badge ⚡ kecil di pojok kanan bawah marker ── */
+const gpuBadgeHtml = `<span style="
+  position:absolute;bottom:-2px;right:-2px;
+  background:#4f46e5;color:#fff;
+  font-size:7px;font-weight:900;line-height:1;
+  padding:1px 2px;border-radius:3px;
+  border:1px solid rgba(255,255,255,.6);
+  pointer-events:none;z-index:10;
+">⚡</span>`;
+
 /* ================= CCTV ICON ================= */
-const pulseIcon = (status, isHighlighted = false) => {
+const pulseIcon = (status, isHighlighted = false, gpuBadge = false) => {
   const color = status === "MERAH" ? "#ef4444" : status === "KUNING" ? "#f97316" : "#22c55e";
   const pulseRgb = status === "MERAH" ? "239,68,68" : status === "KUNING" ? "249,115,22" : "34,197,94";
   const size  = isHighlighted ? 32 : 28;
@@ -330,6 +347,7 @@ const pulseIcon = (status, isHighlighted = false) => {
         background:${color};border:2px solid white;
         box-shadow:0 1px 4px rgba(0,0,0,.35);
       "></span>
+      ${gpuBadge ? gpuBadgeHtml : ''}
     </div>
     <style>
       @keyframes cctvPulse {
@@ -348,7 +366,7 @@ const pulseIcon = (status, isHighlighted = false) => {
 };
 
 /* ================= TOLL ICON (diamond) ================= */
-const tollIcon = (status, isHighlighted = false) => {
+const tollIcon = (status, isHighlighted = false, gpuBadge = false) => {
   const color = status === "MERAH" ? "#ef4444" : status === "KUNING" ? "#f97316" : "#22c55e";
   const pulseRgb = status === "MERAH" ? "239,68,68" : status === "KUNING" ? "249,115,22" : "34,197,94";
   const size = isHighlighted ? 30 : 26;
@@ -379,7 +397,7 @@ const tollIcon = (status, isHighlighted = false) => {
         background:#0f172a;color:#94a3b8;
         border-radius:2px;padding:0 1px;
         font-weight:700;pointer-events:none;
-      ">TOL</span>
+      ">${gpuBadge ? '⚡' : 'TOL'}</span>
     </div>`,
     iconSize:   [size, size],
     iconAnchor: [size / 2, size / 2],
@@ -1622,7 +1640,7 @@ export default function App() {
           const markerStatus = (dbStatus==='MERAH'||dbStatus==='PADAT') ? 'MERAH' : (dbStatus==='KUNING'||dbStatus==='RAMAI') ? 'KUNING' : undefined;
           const isHighlighted = highlighted.includes(c.id);
           return (
-            <Marker key={c.id} position={[c.lat, c.lng]} icon={c.road_type==='toll'?tollIcon(markerStatus,isHighlighted):pulseIcon(markerStatus,isHighlighted)} eventHandlers={{ click: () => {
+            <Marker key={c.id} position={[c.lat, c.lng]} icon={c.road_type==='toll'?tollIcon(markerStatus,isHighlighted,isGpuFresh(c.last_gpu_scan)):pulseIcon(markerStatus,isHighlighted,isGpuFresh(c.last_gpu_scan))} eventHandlers={{ click: () => {
               setCompareMode(null); setHighlighted([]);
               const vv = getEffectiveVehicles(c);
               const lbl = vv > 40 ? 'padat' : vv > 20 ? 'ramai' : 'lancar';

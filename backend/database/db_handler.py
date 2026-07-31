@@ -93,6 +93,7 @@ def get_all_cctv_status():
     try:
         cur.execute("""
             SELECT ct.id, ct.vehicles, ct.weather, ct.status, ct.risk_score, ct.last_update,
+                   ct.last_gpu_scan, ct.speed_kmh,
                    COALESCE(cl.name, ct.name) AS name,
                    COALESCE(cl.lat,  ct.lat)  AS lat,
                    COALESCE(cl.lng,  ct.lng)  AS lng,

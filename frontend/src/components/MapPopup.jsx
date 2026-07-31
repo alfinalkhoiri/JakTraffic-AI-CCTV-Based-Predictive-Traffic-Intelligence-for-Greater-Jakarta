@@ -301,6 +301,37 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
   const [streamStatus, setStreamStatus] = useState("loading");
   const [yoloLiveCount, setYoloLiveCount] = useState(null);
 
+  // Speed estimation state
+  const [speed, setSpeed]           = useState(null);   // km/h number | null
+  const [speedLoading, setSpeedLoading] = useState(false);
+
+  // Jika ada data kecepatan segar dari GPU scan (< 90 detik), pakai langsung
+  useEffect(() => {
+    if (cam.speed_kmh != null && cam.last_gpu_scan) {
+      const age = (Date.now() - new Date(cam.last_gpu_scan).getTime()) / 1000;
+      if (age < 90) { setSpeed(parseFloat(cam.speed_kmh)); return; }
+    }
+    // Auto-fetch hanya untuk kamera tol (stream_url ada) saat popup buka
+    if (cam.stream_url && cam.road_type === 'toll') {
+      setSpeedLoading(true);
+      fetch(`${API}/api/camera-speed/${cam.id}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d?.speed_kmh != null) setSpeed(parseFloat(d.speed_kmh)); })
+        .catch(() => {})
+        .finally(() => setSpeedLoading(false));
+    }
+  }, [cam.id]); // cam.id adalah satu-satunya dep yang bermakna di sini
+
+  const speedColor = speed === null ? null
+    : speed < 15 ? '#ef4444'
+    : speed < 35 ? '#f97316'
+    : '#22c55e';
+  const speedLabel = speed === null ? null
+    : speed < 15 ? 'Macet Total'
+    : speed < 35 ? 'Padat Merayap'
+    : speed < 60 ? 'Ramai Lancar'
+    : 'Lancar';
+
   const dbV  = effectiveVehicles ?? cam.vehicles ?? 0;
   // Saat stream live dan YOLO sudah berhasil → pakai hitungan YOLO; lainnya → DB
   const v    = (streamStatus === "live" && yoloLiveCount !== null) ? yoloLiveCount : dbV;
@@ -339,7 +370,47 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
           </span>
         )}
         <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: "auto" }}>{v} kendaraan</span>
+        {cam.last_gpu_scan && (() => {
+          const age = (Date.now() - new Date(cam.last_gpu_scan).getTime()) / 1000;
+          return age < 90 ? (
+            <span title="Data dari GPU NVIDIA L40S (yolo11l)" style={{
+              fontSize: 9, color: '#a5b4fc', background: '#1e1b4b',
+              border: '1px solid #4f46e5', borderRadius: 4,
+              padding: '1px 5px', fontWeight: 700, marginLeft: 4
+            }}>⚡ GPU</span>
+          ) : null;
+        })()}
       </div>
+
+      {/* Speed bar — hanya untuk kamera dengan stream_url */}
+      {(cam.stream_url || speedLoading) && (
+        <div style={{ padding: '6px 12px', background: '#0f172a', borderBottom: '1px solid #1e293b' }}>
+          {speedLoading ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 10, color: '#64748b', animation: 'pulse 1.2s infinite' }}>⏳</span>
+              <span style={{ fontSize: 10, color: '#64748b' }}>Mengukur kecepatan lalu lintas...</span>
+            </div>
+          ) : speed !== null ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 18, fontWeight: 900, color: speedColor, fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
+                {Math.round(speed)}
+              </span>
+              <div>
+                <div style={{ fontSize: 9, color: '#64748b', lineHeight: 1 }}>km/h rata-rata</div>
+                <div style={{ fontSize: 10, color: speedColor, fontWeight: 700, lineHeight: 1.4 }}>{speedLabel}</div>
+              </div>
+              {/* Progress bar */}
+              <div style={{ flex: 1, height: 4, background: '#1e293b', borderRadius: 2, overflow: 'hidden', marginLeft: 4 }}>
+                <div style={{
+                  height: '100%', borderRadius: 2, background: speedColor,
+                  width: `${Math.min(100, (speed / 80) * 100)}%`,
+                  transition: 'width .6s ease'
+                }} />
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
 
       {/* Info */}
       <div style={{ padding: "10px 12px" }}>

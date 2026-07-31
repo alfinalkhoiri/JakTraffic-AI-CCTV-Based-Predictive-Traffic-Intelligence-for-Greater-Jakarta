@@ -234,12 +234,20 @@ def gpu_scan_job():
     errors = 0
     total_count = 0
 
+    vdet = det.VideoDetector()
+
     def _scan_one(cam):
         nonlocal scanned, errors, total_count
         try:
-            count = det.VideoDetector().get_vehicle_count(cam["stream_url"], cam["id"])
+            count = vdet.get_vehicle_count(cam["stream_url"], cam["id"])
             if count is None:
                 return
+            # Estimasi kecepatan paralel dengan hitungan kendaraan
+            speed = None
+            try:
+                speed = vdet.estimate_speed(cam["stream_url"], cam["id"])
+            except Exception:
+                pass
             weather_text = "Cerah"
             new_status, _ = calculate_decision(count, weather_text)
             risk = min(60 if count > 40 else (20 if count >= 20 else 0), 100)
@@ -247,8 +255,11 @@ def gpu_scan_job():
             conn2 = db_handler.get_db_connection()
             cur2 = conn2.cursor()
             cur2.execute(
-                "UPDATE current_traffic SET vehicles=%s, status=%s, risk_score=%s, last_update=%s WHERE id=%s",
-                (count, new_status, risk, timestamp, cam["id"])
+                """UPDATE current_traffic
+                   SET vehicles=%s, status=%s, risk_score=%s,
+                       last_update=%s, last_gpu_scan=%s, speed_kmh=%s
+                   WHERE id=%s""",
+                (count, new_status, risk, timestamp, timestamp, speed, cam["id"])
             )
             conn2.commit()
             conn2.close()
@@ -2452,6 +2463,68 @@ def gpu_scan_now():
     t = threading.Thread(target=gpu_scan_job, daemon=True)
     t.start()
     return jsonify({"ok": True, "message": "GPU scan triggered"})
+
+
+@app.route("/api/camera-speed/<int:cam_id>")
+def camera_speed(cam_id):
+    """Estimasi kecepatan kendaraan on-demand untuk satu kamera via optical flow.
+    Dipanggil saat user buka popup kamera — ambil 2 frame ~1 detik, hitung flow.
+    """
+    import core.detector as det
+
+    # Ambil stream_url kamera
+    try:
+        conn = db_handler.get_db_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "SELECT stream_url, speed_kmh, last_gpu_scan FROM current_traffic WHERE id=%s",
+            (cam_id,)
+        )
+        row = cur.fetchone()
+        conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    if not row:
+        return jsonify({"error": "Kamera tidak ditemukan"}), 404
+
+    # Jika ada data GPU segar (< 90 detik), kembalikan langsung dari DB
+    last_scan = row.get("last_gpu_scan")
+    cached_speed = row.get("speed_kmh")
+    if last_scan and cached_speed is not None:
+        age_s = (datetime.now() - last_scan).total_seconds()
+        if age_s < 90:
+            return jsonify({
+                "speed_kmh": float(cached_speed),
+                "source": "cache",
+                "age_s": round(age_s, 1),
+            })
+
+    stream_url = row.get("stream_url")
+    if not stream_url:
+        return jsonify({"error": "Kamera tidak memiliki stream URL (bukan JTD)"}), 400
+
+    # Hitung on-demand
+    try:
+        vdet = det.VideoDetector()
+        speed = vdet.estimate_speed(stream_url, cam_id)
+        if speed is None:
+            return jsonify({"error": "Stream tidak bisa dibuka"}), 502
+
+        # Simpan ke DB untuk cache berikutnya
+        conn2 = db_handler.get_db_connection()
+        cur2 = conn2.cursor()
+        cur2.execute(
+            "UPDATE current_traffic SET speed_kmh=%s, last_gpu_scan=NOW() WHERE id=%s",
+            (speed, cam_id)
+        )
+        conn2.commit()
+        conn2.close()
+
+        return jsonify({"speed_kmh": float(speed), "source": "live"})
+    except Exception as e:
+        logger.exception("camera-speed error cam %s", cam_id)
+        return jsonify({"error": str(e)}), 500
 
 
 # ======================================================
