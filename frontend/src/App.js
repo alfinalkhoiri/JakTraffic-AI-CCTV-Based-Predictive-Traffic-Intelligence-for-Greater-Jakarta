@@ -1017,10 +1017,8 @@ export default function App() {
           return v > 30 ? 1.5 : v > 15 ? 1.25 : 1;
         };
 
-        const excludeParam = routeMode === "city" ? "&exclude=motorway" : "";
-
         // ── Step 1: Fetch dengan alternatives ─────────────────────────
-        const initUrl = `https://router.project-osrm.org/route/v1/driving/${startPoint.lng},${startPoint.lat};${endPoint.lng},${endPoint.lat}?overview=full&geometries=geojson&steps=true&alternatives=3${excludeParam}`;
+        const initUrl = `https://router.project-osrm.org/route/v1/driving/${startPoint.lng},${startPoint.lat};${endPoint.lng},${endPoint.lat}?overview=full&geometries=geojson&steps=true&alternatives=3`;
         const initRes = await axios.get(initUrl);
         const osrmRoutes = initRes.data.routes;
 
@@ -1083,7 +1081,7 @@ export default function App() {
           const allWps = [startPoint, ...intermediates, endPoint];
           const wpStr  = allWps.map(w => `${w.lng},${w.lat}`).join(';');
           const wpRes  = await axios.get(
-            `https://router.project-osrm.org/route/v1/driving/${wpStr}?overview=full&geometries=geojson&steps=true${excludeParam}`
+            `https://router.project-osrm.org/route/v1/driving/${wpStr}?overview=full&geometries=geojson&steps=true`
           );
           route  = wpRes.data.routes[0];
           coords = route.geometry.coordinates.map(c => [c[1], c[0]]);
