@@ -14,11 +14,40 @@ os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = (
     'timeout;15000000'
 )
 
-print("Loading Model AI (Background Mode)...")
-model = YOLO('yolo11n.pt')
+# ── GPU Inference Service ────────────────────────────────────────────────────
+# Jika GPU_INFERENCE_URL diset di .env, semua inferensi dikirim ke GPU remote
+# (NVIDIA L40S 44GB via Cloudflare Tunnel). Fallback ke CPU jika GPU tidak tersedia.
+GPU_INFERENCE_URL = os.getenv("GPU_INFERENCE_URL", "").rstrip("/")
 
-# Lock untuk proteksi model.track() dari concurrent threads
-# (YOLO tracker menyimpan state internal — harus serial)
+def _check_gpu_service():
+    if not GPU_INFERENCE_URL:
+        return False
+    try:
+        r = requests.get(f"{GPU_INFERENCE_URL}/health", timeout=5)
+        if r.status_code == 200:
+            info = r.json()
+            print(f"[GPU] Remote service online: {info.get('gpu')} {info.get('vram_gb')}GB — model {info.get('model')}")
+            return True
+    except Exception as e:
+        print(f"[GPU] Remote service unreachable: {e}")
+    return False
+
+_gpu_available = _check_gpu_service()
+
+def _infer_remote(img_bgr):
+    """Kirim frame ke GPU inference service, kembalikan (count, class_counts, annotated_b64, ms)."""
+    _, buf = cv2.imencode('.jpg', img_bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    r = requests.post(
+        f"{GPU_INFERENCE_URL}/detect",
+        files={"file": ("frame.jpg", buf.tobytes(), "image/jpeg")},
+        timeout=20
+    )
+    d = r.json()
+    return d.get("vehicle_count", 0), d.get("class_counts", {}), d.get("annotated_image"), d.get("inference_ms", 0)
+
+# ── CPU fallback model ───────────────────────────────────────────────────────
+print("Loading local YOLO model (CPU fallback)...")
+model = YOLO('yolo11n.pt')
 _inference_lock = threading.Lock()
 
 DEBUG_FOLDER = "debug_views"
@@ -46,14 +75,11 @@ def calculate_traffic_score(vehicle_count, truck_count, weather_text):
     score = 0
     if vehicle_count > 40: score += 60
     elif vehicle_count >= 20: score += 20
-
     if truck_count > 3: score += 15
-
     w = weather_text.lower()
     if "badai" in w or "lebat" in w: score += 50
     elif "hujan" in w: score += 20
     elif "gerimis" in w: score += 10
-
     return min(score, 100)
 
 
@@ -63,46 +89,41 @@ class VideoDetector:
 
     def get_vehicle_count(self, stream_url, loc_id):
         cap = cv2.VideoCapture(stream_url)
-        max_vehicle = 0
-        max_truck = 0
         frames_read = 0
+        best_frame = None
 
         start_time = time.time()
         while time.time() - start_time < 10:
             ret, frame = cap.read()
             if not ret:
                 break
-
             frames_read += 1
-            frame = cv2.resize(frame, (1020, 576))
-            with _inference_lock:
-                results = self.model.track(
-                    frame, classes=[2, 3, 5, 7],
-                    conf=0.1, iou=0.5, persist=True, verbose=False
-                )
-
-            boxes = results[0].boxes
-            count = len(boxes)
-
-            trucks = 0
-            if boxes.cls is not None:
-                cls = boxes.cls.cpu().numpy()
-                trucks = np.sum((cls == 5) | (cls == 7))
-
-            max_vehicle = max(max_vehicle, count)
-            max_truck = max(max_truck, trucks)
+            if frames_read == 1 or frames_read % 5 == 0:
+                best_frame = frame.copy()
 
         cap.release()
-        # Kembalikan None jika tidak berhasil baca satu pun frame (stream tidak terjangkau)
-        if frames_read == 0:
+        if frames_read == 0 or best_frame is None:
             return None
-        return max_vehicle
+
+        # GPU path
+        if _gpu_available:
+            try:
+                count, _, _, ms = _infer_remote(cv2.resize(best_frame, (640, 640)))
+                return count
+            except Exception as e:
+                print(f"[GPU] Inference failed for loc {loc_id}: {e}, falling back to CPU")
+
+        # CPU fallback
+        frame = cv2.resize(best_frame, (1020, 576))
+        with _inference_lock:
+            results = self.model.track(
+                frame, classes=[2, 3, 5, 7],
+                conf=0.1, iou=0.5, persist=True, verbose=False
+            )
+        return len(results[0].boxes)
 
     def detect_file(self, file_path):
-        """
-        Run YOLO 11 on an image or short video file uploaded by admin.
-        Returns dict: {vehicle_count, class_counts, annotated_image (base64 JPEG), processing_time_ms}
-        """
+        """Run YOLO on uploaded image/video. Uses GPU if available."""
         import base64
         start = time.time()
         ext = os.path.splitext(file_path)[1].lower()
@@ -110,19 +131,10 @@ class VideoDetector:
 
         CLASS_NAMES = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
 
-        def _run_inference(frame):
+        def _run_cpu(frame):
             frame = cv2.resize(frame, (1280, 720))
             with _inference_lock:
-                # conf=0.15 agar kendaraan jauh/malam tetap terdeteksi
                 return self.model(frame, classes=[2, 3, 5, 7], conf=0.15, iou=0.45, verbose=False)
-
-        def _count_classes(boxes):
-            counts = {}
-            if boxes.cls is not None:
-                for c in boxes.cls.cpu().numpy().astype(int):
-                    name = CLASS_NAMES.get(c, str(c))
-                    counts[name] = counts.get(name, 0) + 1
-            return counts
 
         def _encode(frame):
             _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -135,37 +147,63 @@ class VideoDetector:
         if is_video:
             cap = cv2.VideoCapture(file_path)
             fps = cap.get(cv2.CAP_PROP_FPS) or 25
-            step = max(1, int(fps * 0.5))  # sample every 0.5 s
+            step = max(1, int(fps * 0.5))
             frame_idx = 0
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
                 if frame_idx % step == 0:
-                    results = _run_inference(frame)
+                    if _gpu_available:
+                        try:
+                            count, cls_counts, ann_b64, _ = _infer_remote(frame)
+                            if count > best_count:
+                                best_count = count
+                                best_classes = cls_counts
+                                best_annotated = ann_b64  # already base64
+                            frame_idx += 1
+                            continue
+                        except Exception:
+                            pass
+                    results = _run_cpu(frame)
                     count = len(results[0].boxes)
                     if count > best_count:
                         best_count = count
-                        best_annotated = results[0].plot()
-                        best_classes = _count_classes(results[0].boxes)
+                        best_annotated = _encode(results[0].plot())
+                        best_classes = {}
+                        if results[0].boxes.cls is not None:
+                            for c in results[0].boxes.cls.cpu().numpy().astype(int):
+                                n = CLASS_NAMES.get(c, str(c))
+                                best_classes[n] = best_classes.get(n, 0) + 1
                 frame_idx += 1
             cap.release()
         else:
             frame = cv2.imread(file_path)
             if frame is None:
                 return None
-            results = _run_inference(frame)
-            best_count = len(results[0].boxes)
-            best_annotated = results[0].plot()
-            best_classes = _count_classes(results[0].boxes)
+            if _gpu_available:
+                try:
+                    best_count, best_classes, best_annotated, _ = _infer_remote(frame)
+                except Exception:
+                    pass
+            if best_annotated is None:
+                results = _run_cpu(frame)
+                best_count = len(results[0].boxes)
+                best_annotated = _encode(results[0].plot())
+                if results[0].boxes.cls is not None:
+                    for c in results[0].boxes.cls.cpu().numpy().astype(int):
+                        n = CLASS_NAMES.get(c, str(c))
+                        best_classes[n] = best_classes.get(n, 0) + 1
 
         if best_annotated is None:
             return None
 
+        # best_annotated bisa base64 string (GPU) atau string (CPU sudah encode)
+        ann_out = best_annotated if isinstance(best_annotated, str) else best_annotated
+
         return {
             'vehicle_count': best_count,
             'class_counts': best_classes,
-            'annotated_image': _encode(best_annotated),
+            'annotated_image': ann_out,
             'processing_time_ms': int((time.time() - start) * 1000),
         }
-
