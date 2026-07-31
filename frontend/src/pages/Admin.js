@@ -189,6 +189,17 @@ export default function Admin() {
   const [modelInfo, setModelInfo] = useState(null);
   const [showChat, setShowChat] = useState(false);
 
+  // GPU Scanner state
+  const [gpuStatus, setGpuStatus]       = useState(null);
+  const [gpuScanLoading, setGpuScanLoading] = useState(false);
+
+  const fetchGpuStatus = () => {
+    fetch('/api/gpu-status')
+      .then(r => r.json())
+      .then(d => setGpuStatus(d))
+      .catch(() => {});
+  };
+
   // Filter kamera (persisted to localStorage for map page)
   const [routeFilter, setRouteFilter] = useState(() => localStorage.getItem('jak_routeMode')  || 'all');
   const [areaFilter,  setAreaFilter]  = useState(() => localStorage.getItem('jak_cameraArea') || 'all');
@@ -412,6 +423,7 @@ export default function Admin() {
             { id:'analitik',  icon:'📊', label:'Analitik',      desc:'Tren & histori' },
             { id:'sinyal',    icon:'🚦', label:'Sinyal Adaptif',desc:'Rekomendasi' },
             { id:'ai',        icon:'🤖', label:'AI Deteksi',    desc:'YOLO & model' },
+            { id:'gpu',       icon:'⚡', label:'GPU Scanner',   desc:'L40S real-time' },
             { id:'manajemen', icon:'🗄️', label:'Manajemen',     desc:'Data kamera' },
             { id:'kamera',    icon:'📹', label:'Filter Kamera', desc:'Wilayah & jenis' },
           ].map(item => (
@@ -913,6 +925,131 @@ export default function Admin() {
               </div>
             </div>
           )}
+
+          {/* ════════════ TAB: GPU SCANNER ════════════ */}
+          {activeTab === 'gpu' && (() => {
+            // Auto-refresh saat tab aktif
+            if (!gpuStatus) fetchGpuStatus();
+            const st = gpuStatus;
+            const healthy = st?.healthy;
+            const hbAge   = st?.heartbeat_age_s;
+            const stats   = st?.scan_stats || {};
+            const info    = st?.gpu_info   || {};
+            return (
+              <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+                {/* Status card */}
+                <div style={A.card}>
+                  <div style={A.cardHdr('#6366f1')}>
+                    <span>⚡ GPU Inference Service</span>
+                    <button onClick={fetchGpuStatus}
+                      style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'#fff',
+                               padding:'4px 12px', borderRadius:6, cursor:'pointer', fontSize:12 }}>
+                      Refresh
+                    </button>
+                  </div>
+                  <div style={{ padding:16, display:'flex', flexDirection:'column', gap:12 }}>
+                    {!st ? (
+                      <div style={{ color:'#94a3b8', textAlign:'center', padding:'20px 0' }}>Memuat status GPU...</div>
+                    ) : (
+                      <>
+                        {/* Status badge */}
+                        <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+                          <span style={{
+                            background: healthy ? '#065f46' : '#7f1d1d',
+                            color: healthy ? '#6ee7b7' : '#fca5a5',
+                            padding:'6px 16px', borderRadius:20, fontSize:13, fontWeight:700
+                          }}>
+                            {healthy ? '● ONLINE' : '● OFFLINE'}
+                          </span>
+                          {hbAge !== null && (
+                            <span style={{ color:'#94a3b8', fontSize:12 }}>
+                              Heartbeat {hbAge < 60 ? `${hbAge}s` : `${Math.round(hbAge/60)}m`} yang lalu
+                            </span>
+                          )}
+                        </div>
+
+                        {/* GPU info */}
+                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+                          {[
+                            ['GPU',   info.gpu   || 'NVIDIA L40S'],
+                            ['VRAM',  info.vram_gb ? `${info.vram_gb} GB` : '47.7 GB'],
+                            ['Model', info.model  || 'yolo11l.pt'],
+                            ['URL',   st.url ? st.url.replace('https://','') : '—'],
+                          ].map(([k,v]) => (
+                            <div key={k} style={{ background:'#1e293b', borderRadius:8, padding:'8px 12px' }}>
+                              <div style={{ color:'#64748b', fontSize:10, marginBottom:2 }}>{k}</div>
+                              <div style={{ color:'#e2e8f0', fontSize:12, wordBreak:'break-all' }}>{v}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Scan stats card */}
+                <div style={A.card}>
+                  <div style={A.cardHdr('#0891b2')}>
+                    <span>📊 Statistik Scan Real-time</span>
+                  </div>
+                  <div style={{ padding:16, display:'flex', flexDirection:'column', gap:12 }}>
+                    <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8 }}>
+                      {[
+                        ['Kamera Discan', stats.cameras_scanned ?? '—'],
+                        ['Rata-rata Kend.', stats.avg_count ? stats.avg_count.toFixed(1) : '—'],
+                        ['Error', stats.errors ?? '—'],
+                      ].map(([k,v]) => (
+                        <div key={k} style={{ background:'#1e293b', borderRadius:8, padding:'12px', textAlign:'center' }}>
+                          <div style={{ color:'#38bdf8', fontSize:22, fontWeight:800, fontVariantNumeric:'tabular-nums' }}>{v}</div>
+                          <div style={{ color:'#64748b', fontSize:11 }}>{k}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {stats.last_scan && (
+                      <div style={{ color:'#64748b', fontSize:12, textAlign:'center' }}>
+                        Scan terakhir: {stats.last_scan}
+                      </div>
+                    )}
+
+                    {/* Manual trigger */}
+                    <button
+                      disabled={gpuScanLoading || !healthy}
+                      onClick={() => {
+                        setGpuScanLoading(true);
+                        fetch('/api/gpu-scan-now', { method:'POST' })
+                          .then(() => setTimeout(() => { fetchGpuStatus(); setGpuScanLoading(false); }, 35000))
+                          .catch(() => setGpuScanLoading(false));
+                      }}
+                      style={{
+                        background: healthy ? (gpuScanLoading ? '#1e293b' : '#4f46e5') : '#374151',
+                        color: healthy ? '#fff' : '#6b7280',
+                        border:'none', borderRadius:8, padding:'10px 0',
+                        fontWeight:700, cursor: healthy && !gpuScanLoading ? 'pointer' : 'not-allowed',
+                        fontSize:14, width:'100%'
+                      }}>
+                      {gpuScanLoading ? '⏳ Scanning... (~30 detik)' : '⚡ Scan Sekarang (Manual)'}
+                    </button>
+                    <p style={{ color:'#475569', fontSize:11, textAlign:'center', margin:0 }}>
+                      Auto-scan berjalan setiap 60 detik jika GPU online · {stats.cameras_scanned || 59} kamera JTD
+                    </p>
+                  </div>
+                </div>
+
+                {/* Speed estimation note */}
+                <div style={{ ...A.card, opacity:0.7 }}>
+                  <div style={A.cardHdr('#0f766e')}>
+                    <span>🚗 Speed Estimation (Phase 3)</span>
+                    <span style={{ fontSize:11, opacity:0.7 }}>Coming soon</span>
+                  </div>
+                  <div style={{ padding:16, color:'#94a3b8', fontSize:13, lineHeight:1.6 }}>
+                    Estimasi kecepatan rata-rata kendaraan via optical flow (cv2.calcOpticalFlowFarneback).
+                    Dua frame berjarak ~1 detik → mean flow magnitude → km/h.
+                    Akan muncul di popup kamera dan heatmap kecepatan.
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* ════════════ TAB: MANAJEMEN ════════════ */}
           {activeTab === 'manajemen' && (

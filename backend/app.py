@@ -186,11 +186,110 @@ def mining_job():
         logger.warning("[WS] emit error: %s", _ws_err)
 
 
+# ── GPU State ────────────────────────────────────────────────────────────────
+_gpu_state = {
+    "url": os.getenv("GPU_INFERENCE_URL", "").rstrip("/"),
+    "last_heartbeat": 0.0,
+    "gpu_info": {},
+    "scan_stats": {
+        "last_scan": None,
+        "cameras_scanned": 0,
+        "errors": 0,
+        "avg_count": 0.0,
+    },
+}
+
+
+# ── GPU Background Camera Scanner ────────────────────────────────────────────
+def gpu_scan_job():
+    """Scan semua kamera JTD dengan GPU (yolo11l) setiap 60 detik.
+    Jauh lebih cepat dari mining_job karena hanya butuh 1 frame per kamera.
+    Berjalan paralel 12 thread.
+    """
+    import core.detector as det
+
+    if not det.is_gpu_healthy():
+        logger.debug("[GPU Scanner] GPU tidak sehat, skip scan")
+        return
+
+    try:
+        conn = db_handler.get_db_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "SELECT id, name, stream_url FROM cctv_locations "
+            "WHERE stream_url IS NOT NULL AND stream_url != '' "
+            "ORDER BY id"
+        )
+        cameras = cur.fetchall()
+        conn.close()
+    except Exception as e:
+        logger.error("[GPU Scanner] DB fetch error: %s", e)
+        return
+
+    if not cameras:
+        return
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    scanned = 0
+    errors = 0
+    total_count = 0
+
+    def _scan_one(cam):
+        nonlocal scanned, errors, total_count
+        try:
+            count = det.VideoDetector().get_vehicle_count(cam["stream_url"], cam["id"])
+            if count is None:
+                return
+            weather_text = "Cerah"
+            new_status, _ = calculate_decision(count, weather_text)
+            risk = min(60 if count > 40 else (20 if count >= 20 else 0), 100)
+            db_handler.insert_log(cam["id"], count, timestamp)
+            conn2 = db_handler.get_db_connection()
+            cur2 = conn2.cursor()
+            cur2.execute(
+                "UPDATE current_traffic SET vehicles=%s, status=%s, risk_score=%s, last_update=%s WHERE id=%s",
+                (count, new_status, risk, timestamp, cam["id"])
+            )
+            conn2.commit()
+            conn2.close()
+            scanned += 1
+            total_count += count
+        except Exception as e:
+            errors += 1
+            logger.warning("[GPU Scanner] cam %s error: %s", cam.get("id"), e)
+
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        list(ex.map(_scan_one, cameras))
+
+    avg = round(total_count / scanned, 1) if scanned else 0
+    _gpu_state["scan_stats"].update({
+        "last_scan": timestamp,
+        "cameras_scanned": scanned,
+        "errors": errors,
+        "avg_count": avg,
+    })
+    logger.info("[GPU Scanner] ✅ %d/%d kamera | avg %s kend | %d error",
+                scanned, len(cameras), avg, errors)
+
+    try:
+        updated = db_handler.get_all_cctv_status()
+        socketio.emit("traffic_update", updated)
+        socketio.emit("gpu_scan_complete", {
+            "timestamp": timestamp,
+            "cameras_scanned": scanned,
+            "avg_count": avg,
+        })
+    except Exception as e:
+        logger.warning("[GPU Scanner] emit error: %s", e)
+
+
 scheduler = BackgroundScheduler()
-scheduler.add_job(func=mining_job, trigger="interval", minutes=2, max_instances=1, coalesce=True)
+scheduler.add_job(func=mining_job,  trigger="interval", minutes=2,  max_instances=1, coalesce=True)
+scheduler.add_job(func=gpu_scan_job, trigger="interval", seconds=60, max_instances=1, coalesce=True, id="gpu_scanner")
 scheduler.start()
 
 logger.info("✅ Mode LIVE aktif — Mining & YOLO diaktifkan. Data diperbarui setiap 2 menit (4 parallel workers).")
+logger.info("✅ GPU Scanner aktif — scan %d kamera JTD setiap 60 detik jika GPU online.", 0)
 
 
 def _ts_str(v):
@@ -2299,6 +2398,60 @@ def detect_frame():
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+# ======================================================
+# 🖥️  GPU SERVICE MANAGEMENT
+# ======================================================
+
+@app.route("/api/gpu-register", methods=["POST"])
+def gpu_register():
+    """GPU service memanggil endpoint ini saat startup untuk mendaftarkan URL-nya."""
+    import core.detector as det
+    data = request.json or {}
+    url = (data.get("url") or "").rstrip("/")
+    if not url or not url.startswith("http"):
+        return jsonify({"error": "url tidak valid"}), 400
+
+    _gpu_state["url"] = url
+    _gpu_state["last_heartbeat"] = time.time()
+    _gpu_state["gpu_info"] = data.get("info", {})
+
+    det.set_gpu_url(url)
+    logger.info("[GPU] Registered: %s  gpu=%s", url, data.get("info", {}).get("gpu"))
+    return jsonify({"ok": True, "message": "GPU service registered"})
+
+
+@app.route("/api/gpu-heartbeat", methods=["POST", "GET"])
+def gpu_heartbeat():
+    """Periodic heartbeat dari GPU service — cukup update timestamp."""
+    import core.detector as det
+    _gpu_state["last_heartbeat"] = time.time()
+    det.mark_gpu_heartbeat()
+    return jsonify({"ok": True, "server_time": time.time()})
+
+
+@app.route("/api/gpu-status")
+def gpu_status():
+    """Status GPU service + scan stats — digunakan oleh admin panel."""
+    import core.detector as det
+    age = time.time() - _gpu_state["last_heartbeat"] if _gpu_state["last_heartbeat"] else None
+    return jsonify({
+        "url":          _gpu_state["url"],
+        "healthy":      det.is_gpu_healthy(),
+        "heartbeat_age_s": round(age, 1) if age is not None else None,
+        "gpu_info":     _gpu_state["gpu_info"],
+        "scan_stats":   _gpu_state["scan_stats"],
+    })
+
+
+@app.route("/api/gpu-scan-now", methods=["POST"])
+def gpu_scan_now():
+    """Trigger GPU scan manual (operator)."""
+    import threading
+    t = threading.Thread(target=gpu_scan_job, daemon=True)
+    t.start()
+    return jsonify({"ok": True, "message": "GPU scan triggered"})
 
 
 # ======================================================
