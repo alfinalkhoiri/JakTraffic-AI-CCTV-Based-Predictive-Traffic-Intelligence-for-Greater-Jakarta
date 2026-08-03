@@ -13,7 +13,15 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "*",
 };
 
-const ALLOWED_ORIGIN = "https://cctv.balitower.co.id";
+// Domain CCTV yang diizinkan diproxy melalui Worker ini
+const ALLOWED_ORIGINS = [
+  "https://cctv.balitower.co.id",
+  "https://camera.jtd.co.id",
+];
+
+function getAllowedOrigin(url) {
+  return ALLOWED_ORIGINS.find(o => url.startsWith(o + "/"));
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -28,17 +36,17 @@ export default {
       return new Response("Missing ?url= parameter", { status: 400, headers: CORS_HEADERS });
     }
 
-    // Security: only proxy Balitower CCTV URLs
-    if (!targetUrl.startsWith(ALLOWED_ORIGIN + "/")) {
-      return new Response("Forbidden: only Balitower CCTV URLs allowed", { status: 403, headers: CORS_HEADERS });
+    const matchedOrigin = getAllowedOrigin(targetUrl);
+    if (!matchedOrigin) {
+      return new Response("Forbidden: URL not in allowed CCTV domains", { status: 403, headers: CORS_HEADERS });
     }
 
     try {
       const upstream = await fetch(targetUrl, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125",
-          "Referer": ALLOWED_ORIGIN + "/",
-          "Origin": ALLOWED_ORIGIN,
+          "Referer": matchedOrigin + "/",
+          "Origin": matchedOrigin,
         },
       });
 

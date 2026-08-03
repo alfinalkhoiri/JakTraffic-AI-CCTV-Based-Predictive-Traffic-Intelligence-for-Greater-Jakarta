@@ -4,6 +4,13 @@ import Hls from "hls.js";
 const WORKER_URL = process.env.REACT_APP_CCTV_PROXY || "";
 const API        = process.env.REACT_APP_API_URL || "";
 
+const queueMeters = (vehicles, speed) => {
+  const spd = speed != null ? speed : 999;
+  // spd < 2: kemungkinan noise optical flow, bukan kemacetan nyata
+  if (spd > 25 || spd < 2 || vehicles < 8) return 0;
+  return Math.round(vehicles * (spd < 10 ? 6.5 : 9.0));
+};
+
 /* ── Snapshot viewer — refresh setiap SNAP_INTERVAL detik ── */
 const SNAP_INTERVAL = 15000;
 
@@ -259,9 +266,9 @@ function LivePreview({ previewUrl, onStatusChange, onYoloResult }) {
 
       {/* LIVE badge */}
       {status === "live" && (
-        <div style={{ position: "absolute", top: 8, left: 8, background: "rgba(239,68,68,0.9)", borderRadius: 999, padding: "2px 8px", display: "flex", alignItems: "center", gap: 4 }}>
+        <div style={{ position: "absolute", top: 8, left: 8, background: "rgba(16,185,129,0.9)", borderRadius: 999, padding: "2px 8px", display: "flex", alignItems: "center", gap: 4 }}>
           <span style={{ width: 6, height: 6, borderRadius: "50%", background: "white", animation: "pulse 1.5s infinite" }} />
-          <span style={{ fontSize: 10, color: "white", fontWeight: 700 }}>LIVE</span>
+          <span style={{ fontSize: 10, color: "white", fontWeight: 700 }}>▶ LIVE</span>
         </div>
       )}
 
@@ -302,8 +309,18 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
   const [yoloLiveCount, setYoloLiveCount] = useState(null);
 
   // Speed estimation state
-  const [speed, setSpeed]           = useState(null);   // km/h number | null
+  const [speed, setSpeed]           = useState(null);
   const [speedLoading, setSpeedLoading] = useState(false);
+
+  // Prediksi 1 jam ke depan
+  const [predNext, setPredNext] = useState(null);
+  useEffect(() => {
+    setPredNext(null);
+    fetch(`${API}/api/predict-next-hour/${cam.id}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && !d.error) setPredNext(d); })
+      .catch(() => {});
+  }, [cam.id]);
 
   // Jika ada data kecepatan segar dari GPU scan (< 90 detik), pakai langsung
   useEffect(() => {
@@ -370,20 +387,26 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
           </span>
         )}
         <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: "auto" }}>{v} kendaraan</span>
-        {cam.last_gpu_scan && (() => {
-          const age = (Date.now() - new Date(cam.last_gpu_scan).getTime()) / 1000;
-          return age < 90 ? (
-            <span title="Data dari GPU NVIDIA L40S (yolo11l)" style={{
+        {(() => {
+          const gpuRecent = cam.last_gpu_scan && (Date.now() - new Date(cam.last_gpu_scan).getTime()) / 1000 < 90;
+          return gpuRecent ? (
+            <span title="Data dari GPU NVIDIA L40S — Model Indonesia (angkot, bajaj, becak, motor, dll)" style={{
               fontSize: 9, color: '#a5b4fc', background: '#1e1b4b',
               border: '1px solid #4f46e5', borderRadius: 4,
               padding: '1px 5px', fontWeight: 700, marginLeft: 4
-            }}>⚡ GPU</span>
-          ) : null;
+            }}>⚡ ID-Model</span>
+          ) : (
+            <span title="Model YOLO Indonesia — deteksi angkot, bajaj, becak, motor, dll" style={{
+              fontSize: 9, color: '#86efac', background: '#052e16',
+              border: '1px solid #166534', borderRadius: 4,
+              padding: '1px 5px', fontWeight: 700, marginLeft: 4
+            }}>🇮🇩 ID-Model</span>
+          );
         })()}
       </div>
 
-      {/* Speed bar — hanya tampil jika ada ≥2 kendaraan (hindari noise optical flow saat jalan kosong) */}
-      {(cam.stream_url || speedLoading) && v >= 2 && (
+      {/* Speed bar — tampil hanya jika ada ≥5 kendaraan DAN speed > 2 (1-2 km/h = noise kompresi HLS) */}
+      {(cam.stream_url || speedLoading) && v >= 5 && (speed === null || speed > 2) && (
         <div style={{ padding: '6px 12px', background: '#0f172a', borderBottom: '1px solid #1e293b' }}>
           {speedLoading ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -419,6 +442,40 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
         )}
         <p style={{ fontSize: 14, fontWeight: 700, color: "white", margin: "0 0 6px", lineHeight: 1.3 }}>{cam.name}</p>
 
+        {/* Prediksi 1 jam ke depan */}
+        {predNext && (() => {
+          const pv = predNext.predicted;
+          const pColor = pv > 40 ? '#f43f5e' : pv > 20 ? '#f59e0b' : '#22c55e';
+          const pLabel = pv > 40 ? 'PADAT' : pv > 20 ? 'RAMAI' : 'LANCAR';
+          const trend = pv > v + 5 ? '↑' : pv < v - 5 ? '↓' : '→';
+          const trendColor = pv > v + 5 ? '#f43f5e' : pv < v - 5 ? '#22c55e' : '#64748b';
+          const isWorsen = pv > 40 && v <= 40;
+          return (
+            <div style={{ display:'flex', alignItems:'center', gap:8, background: isWorsen ? 'rgba(249,115,22,.12)' : '#0f172a', borderRadius:6, padding:'5px 10px', marginBottom:6, border: isWorsen ? '1px solid rgba(249,115,22,.3)' : '1px solid transparent' }}>
+              <span style={{ fontSize:11 }}>🔮</span>
+              <span style={{ fontSize:9, color:'#64748b', flexShrink:0 }}>Prediksi 1j:</span>
+              <span style={{ fontSize:11, fontWeight:800, color:pColor }}>{pLabel}</span>
+              <span style={{ fontSize:10, color:'#475569', fontVariantNumeric:'tabular-nums' }}>{pv} kend</span>
+              <span style={{ fontSize:11, fontWeight:800, color:trendColor, marginLeft:'auto' }}>{trend}</span>
+              {isWorsen && <span style={{ fontSize:8, color:'#fb923c', fontWeight:700 }}>⚠ AKAN PADAT</span>}
+            </div>
+          );
+        })()}
+
+        {/* Estimasi panjang antrian */}
+        {(() => {
+          const qm = queueMeters(v, speed);
+          if (qm <= 0) return null;
+          const label = qm >= 1000 ? `${(qm / 1000).toFixed(1)} km` : `${qm} m`;
+          return (
+            <div style={{ display:'flex', alignItems:'center', gap:6, background:'#0f172a', borderRadius:6, padding:'5px 10px', marginBottom:6 }}>
+              <span style={{ fontSize:13 }}>🚗</span>
+              <span style={{ fontSize:11, fontWeight:700, color:'#f97316' }}>{label}</span>
+              <span style={{ fontSize:10, color:'#64748b' }}>estimasi panjang antrian</span>
+            </div>
+          );
+        })()}
+
         {/* Signal recommendation — hanya tampil untuk operator (showSignalRec=true) */}
         {showSignalRec && (cam.has_signal ? (
           <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#0f172a", borderRadius: 8, padding: "7px 10px" }}>
@@ -447,23 +504,6 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
             onMouseLeave={e => e.currentTarget.style.background="#334155"}
           >
             Analitik Detail →
-          </button>
-          <button
-            title="Ambil Snapshot"
-            onClick={() => {
-              const ts = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
-              const fname = `${cam.name.replace(/[^a-z0-9]/gi,'_')}_${ts}.jpg`;
-              if (cam.preview_url?.startsWith('__snap__:')) {
-                const url = `${API}/api/camera-snapshot/${cam.preview_url.replace('__snap__:','')}`;
-                fetch(url).then(r => r.blob()).then(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = fname; a.click(); });
-              } else {
-                alert('Snapshot hanya tersedia untuk kamera dengan feed aktif.');
-              }
-            }}
-            style={{ background:"rgba(56,189,248,.12)", border:"1px solid rgba(56,189,248,.2)", borderRadius:8, padding:"7px 10px", color:"#38bdf8", fontSize:13, cursor:"pointer" }}
-            title="Unduh snapshot kamera"
-          >
-            📸
           </button>
         </div>
       </div>

@@ -78,9 +78,55 @@ def _infer_remote(img_bgr):
     return d.get("vehicle_count", 0), d.get("class_counts", {}), d.get("annotated_image"), d.get("inference_ms", 0)
 
 
+def infer_batch_remote(frames: list) -> list:
+    """
+    Kirim N frame sekaligus ke GPU service v4 /detect-batch.
+    frames: [{"cam_id": int, "img": np.ndarray, "timestamp": float}]
+    Returns: [{"cam_id", "vehicle_count", "class_counts", "speed_kmh", ...}]
+    """
+    import base64 as _b64, time as _time
+    url = get_gpu_url()
+    if not url:
+        raise RuntimeError("No GPU URL configured")
+
+    payload_frames = []
+    for f in frames:
+        img = cv2.resize(f["img"], (640, 640))
+        _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        payload_frames.append({
+            "cam_id":    f["cam_id"],
+            "image_b64": _b64.b64encode(buf).decode(),
+            "timestamp": f.get("timestamp", _time.time()),
+        })
+
+    r = requests.post(
+        f"{url}/detect-batch",
+        json={"frames": payload_frames, "conf": 0.15, "iou": 0.45},
+        timeout=60,
+    )
+    r.raise_for_status()
+    return r.json().get("results", [])
+
+
 # ── CPU fallback model ───────────────────────────────────────────────────────
-print("Loading local YOLO model (CPU fallback)...")
-model = YOLO('yolo11n.pt')
+# Prioritas: yolo11x Indonesia → yolo11s Indonesia → yolo11s COCO
+_MODELS_DIR     = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "models"))
+_MODEL_11X_PATH = os.path.join(_MODELS_DIR, "jaktraffic_yolo11x.pt")
+_ID_MODEL_PATH  = os.path.join(_MODELS_DIR, "jaktraffic_yolo.pt")
+
+if os.path.exists(_MODEL_11X_PATH):
+    print(f"Loading YOLO11x Indonesia model (CPU): {_MODEL_11X_PATH}")
+    model = YOLO(_MODEL_11X_PATH)
+    _model_is_id = True
+elif os.path.exists(_ID_MODEL_PATH):
+    print(f"Loading Indonesia model (CPU): {_ID_MODEL_PATH}")
+    model = YOLO(_ID_MODEL_PATH)
+    _model_is_id = True
+else:
+    print("Loading yolo11s.pt (CPU fallback, COCO)...")
+    model = YOLO('yolo11s.pt')
+    _model_is_id = False
+
 _inference_lock = threading.Lock()
 
 DEBUG_FOLDER = "debug_views"
@@ -150,26 +196,37 @@ class VideoDetector:
             except Exception as e:
                 print(f"[GPU] Inference failed for loc {loc_id}: {e}, falling back to CPU")
 
-        # CPU fallback — baca 10 detik, ambil max count
+        # CPU fallback — ambil 4 frame selama max 3 detik, return median
+        # Median lebih robust dari max: 1 frame noise tidak akan spike count
+        import statistics as _stats
+        # Indonesia model: semua kelas (0-9) adalah kendaraan — jangan filter per class
+        # COCO model: hanya ambil car=2, motorcycle=3, bus=5, truck=7
+        _cls_filter = None if _model_is_id else [2, 3, 5, 7]
         cap = cv2.VideoCapture(stream_url)
-        max_count = 0
+        counts = []
         frames_read = 0
+        last_infer = 0.0
         start_time = time.time()
-        while time.time() - start_time < 10:
+        while time.time() - start_time < 3.5 and len(counts) < 4:
             ret, frame = cap.read()
             if not ret:
                 break
             frames_read += 1
-            if frames_read % 5 == 0:
-                frame = cv2.resize(frame, (1020, 576))
+            now = time.time()
+            if now - last_infer >= 0.7:
+                last_infer = now
+                # imgsz=320 — 4x lebih cepat dari 640, akurasi cukup untuk counting
+                frame_s = cv2.resize(frame, (320, 320))
                 with _inference_lock:
-                    results = self.model.track(
-                        frame, classes=[2, 3, 5, 7],
-                        conf=0.1, iou=0.5, persist=True, verbose=False
+                    results = self.model(
+                        frame_s, classes=_cls_filter,
+                        conf=0.28, iou=0.45, imgsz=320, verbose=False
                     )
-                max_count = max(max_count, len(results[0].boxes))
+                counts.append(len(results[0].boxes))
         cap.release()
-        return max_count if frames_read > 0 else None
+        if not counts:
+            return None
+        return int(round(_stats.median(counts)))
 
     def estimate_speed(self, stream_url, loc_id, pixel_per_meter=8.0):
         """
@@ -207,9 +264,12 @@ class VideoDetector:
         )
         mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
 
-        # Buang pixel diam (< 1px) agar tidak distorsi oleh latar belakang
-        moving = mag[mag > 1.0]
-        if len(moving) == 0:
+        # Threshold 2.5px menyaring artefak kompresi video (DCT noise) yang
+        # pada frame HLS malam hari bisa menghasilkan 1-2px motion palsu.
+        # Juga butuh minimum 0.3% pixel bergerak — jika lebih sedikit, itu noise.
+        moving = mag[mag > 2.5]
+        min_pixels = mag.size * 0.003
+        if len(moving) == 0 or len(moving) < min_pixels:
             return 0.0
 
         mean_px = float(np.mean(moving))
@@ -224,12 +284,19 @@ class VideoDetector:
         ext = os.path.splitext(file_path)[1].lower()
         is_video = ext in ('.mp4', '.avi', '.mov', '.mkv', '.webm')
 
-        CLASS_NAMES = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
+        if _model_is_id:
+            CLASS_NAMES  = {0: 'car', 1: 'motor', 2: 'bus', 3: 'truck',
+                            4: 'angkot', 5: 'bajaj', 6: 'becak', 7: 'bicycle',
+                            8: 'person', 9: 'gerobak'}
+            _cls_filter = None   # semua kelas Indonesia adalah kendaraan
+        else:
+            CLASS_NAMES  = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
+            _cls_filter = [2, 3, 5, 7]
 
         def _run_cpu(frame):
             frame = cv2.resize(frame, (1280, 720))
             with _inference_lock:
-                return self.model(frame, classes=[2, 3, 5, 7], conf=0.15, iou=0.45, verbose=False)
+                return self.model(frame, classes=_cls_filter, conf=0.15, iou=0.45, verbose=False)
 
         def _encode(frame):
             _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])

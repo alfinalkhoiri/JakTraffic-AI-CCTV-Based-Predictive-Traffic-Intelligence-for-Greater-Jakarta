@@ -18,7 +18,19 @@ import tempfile
 import time
 import subprocess
 import random
+import threading
 import math
+
+# ── Timezone helper ──────────────────────────────────────────────────────────
+WIB_OFFSET = timedelta(hours=7)   # Jakarta = UTC+7
+
+def _jak_now() -> datetime:
+    """Real current time in WIB (UTC+7). Always uses wall clock, never simulation time."""
+    return datetime.utcnow() + WIB_OFFSET
+
+def _jak_hour() -> int:
+    """Current hour in WIB (UTC+7) — real clock, not simulation time."""
+    return _jak_now().hour
 
 # SumoPod (OpenAI-compatible) config
 SUMOPOD_API_KEY = os.environ.get("SUMOPOD_API_KEY", "")
@@ -111,13 +123,23 @@ def _simulate_vehicle_count(loc_id: int, ts: datetime = None) -> int:
     return max(0, count)
 
 
+_BEKASI_PUBLIC_PREFIX = "https://jaktrafficai.f-mc.my.id/stream-proxy/bekasi/"
+_BEKASI_INTERNAL_PREFIX = "http://localhost:18088/bekasi/"
+
+def _resolve_stream_url(url: str) -> str:
+    """Konversi URL publik Bekasi ke URL internal untuk cv2/YOLO backend."""
+    if url and url.startswith(_BEKASI_PUBLIC_PREFIX):
+        return _BEKASI_INTERNAL_PREFIX + url[len(_BEKASI_PUBLIC_PREFIX):]
+    return url
+
+
 def _process_single_camera(cctv, timestamp):
     """Proses satu kamera: baca stream, hitung kendaraan, simpan ke DB.
     Dipanggil dari thread pool — setiap thread membuka koneksi DB sendiri.
     """
     loc_id = cctv.get("id")
     name = cctv.get("name", f"Lokasi {loc_id}")
-    stream_url = cctv.get("stream_url")
+    stream_url = _resolve_stream_url(cctv.get("stream_url"))
     try:
         ts_dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S") if isinstance(timestamp, str) else timestamp
         if not stream_url:
@@ -186,6 +208,89 @@ def mining_job():
         logger.warning("[WS] emit error: %s", _ws_err)
 
 
+# ── Camera Health (in-memory, updated setiap scan) ───────────────────────────
+# cam_id → {last_seen, error_count, success_count, consecutive_errors, last_count}
+_cam_health: dict = {}
+
+def _cam_health_ok(cam_id: int):
+    """Tandai kamera berhasil discan."""
+    h = _cam_health.get(cam_id, {"error_count": 0, "success_count": 0, "consecutive_errors": 0})
+    h["last_seen"]          = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    h["success_count"]      = h.get("success_count", 0) + 1
+    h["consecutive_errors"] = 0
+    _cam_health[cam_id]     = h
+
+def _cam_health_err(cam_id: int):
+    """Tandai kamera gagal discan."""
+    h = _cam_health.get(cam_id, {"error_count": 0, "success_count": 0, "consecutive_errors": 0})
+    h["error_count"]        = h.get("error_count", 0) + 1
+    h["consecutive_errors"] = h.get("consecutive_errors", 0) + 1
+    _cam_health[cam_id]     = h
+
+# ── Incident Detection (in-memory, updated setiap scan) ──────────────────────
+_incident_counters: dict = {}   # cam_id → {type: consecutive_cycles}
+_active_incidents:  dict = {}   # cam_id → incident payload
+
+_INC_CONFIRM = 3    # siklus berturut-turut sebelum insiden dikonfirmasi
+_INC_RESOLVE = 2    # siklus normal berturut-turut sebelum insiden diselesaikan
+
+def _run_incident_detection(cam_id: int, cam_name: str, lat: float, lng: float,
+                             count: int, speed, prev_count: int) -> bool:
+    """
+    Analisis anomali untuk 1 kamera. Return True jika ada perubahan state insiden
+    (baru muncul, berubah tipe, atau selesai) — trigger WebSocket emit.
+    """
+    c = _incident_counters.get(cam_id, {
+        "kemacetan": 0, "lonjakan": 0, "vol_ekstrem": 0, "_normal": 0
+    })
+    spd = speed if isinstance(speed, (int, float)) else 999
+
+    is_kemacetan  = count > 40 and spd < 8
+    is_lonjakan   = prev_count > 5 and count > prev_count * 1.7 and count > 25
+    is_vol_ext    = count > 65
+
+    c["kemacetan"]  = c["kemacetan"]  + 1 if is_kemacetan else max(0, c["kemacetan"]  - 1)
+    c["lonjakan"]   = c["lonjakan"]   + 1 if is_lonjakan  else max(0, c["lonjakan"]   - 1)
+    c["vol_ekstrem"]= c["vol_ekstrem"]+ 1 if is_vol_ext   else max(0, c["vol_ekstrem"]- 1)
+    c["_normal"]    = c["_normal"]    + 1 if not (is_kemacetan or is_lonjakan or is_vol_ext) else 0
+    _incident_counters[cam_id] = c
+
+    new_inc = None
+    if c["kemacetan"] >= _INC_CONFIRM:
+        new_inc = {"type": "kemacetan_total",   "label": "Kemacetan Total",   "severity": "critical", "color": "#ef4444"}
+    elif c["vol_ekstrem"] >= _INC_CONFIRM:
+        new_inc = {"type": "volume_ekstrem",    "label": "Volume Ekstrem",    "severity": "warning",  "color": "#f59e0b"}
+    elif c["lonjakan"] >= _INC_CONFIRM:
+        new_inc = {"type": "lonjakan_mendadak", "label": "Lonjakan Mendadak", "severity": "warning",  "color": "#f97316"}
+
+    prev_inc = _active_incidents.get(cam_id)
+
+    if prev_inc and c["_normal"] >= _INC_RESOLVE and new_inc is None:
+        del _active_incidents[cam_id]
+        return True   # resolved
+
+    if new_inc:
+        payload = {
+            **new_inc,
+            "cam_id": cam_id, "cam_name": cam_name,
+            "lat": lat, "lng": lng,
+            "vehicle_count": count, "speed_kmh": speed,
+            "ts": time.time(),
+        }
+        if prev_inc is None or prev_inc.get("type") != new_inc["type"]:
+            _active_incidents[cam_id] = payload
+            return True   # new / type-changed
+        # update angka tapi bukan state change
+        _active_incidents[cam_id].update({"vehicle_count": count, "speed_kmh": speed})
+
+    return False
+
+# Init DB extensions
+try:
+    db_handler.init_extensions()
+except Exception as _init_err:
+    logger.warning("[init] DB extensions: %s", _init_err)
+
 # ── GPU State ────────────────────────────────────────────────────────────────
 _gpu_state = {
     "url": os.getenv("GPU_INFERENCE_URL", "").rstrip("/"),
@@ -202,11 +307,18 @@ _gpu_state = {
 
 # ── GPU Background Camera Scanner ────────────────────────────────────────────
 def gpu_scan_job():
-    """Scan semua kamera JTD dengan GPU (yolo11l) setiap 60 detik.
-    Jauh lebih cepat dari mining_job karena hanya butuh 1 frame per kamera.
-    Berjalan paralel 12 thread.
+    """
+    Scan semua kamera dengan GPU v4 batch inference.
+    Arsitektur baru:
+      1. Grab semua frame paralel (I/O bound → ThreadPoolExecutor)
+      2. Kirim SATU batch request ke GPU service
+      3. GPU proses semua frame dalam 1 forward pass (jauh lebih efisien)
+      4. Update DB paralel
+    Sebelumnya: N HTTP requests → N GPU inferences (sequential per call)
+    Sekarang  : 1 HTTP request  → 1 GPU batch forward pass (32x lebih cepat)
     """
     import core.detector as det
+    import base64 as _b64
 
     if not det.is_gpu_healthy():
         logger.debug("[GPU Scanner] GPU tidak sehat, skip scan")
@@ -216,7 +328,7 @@ def gpu_scan_job():
         conn = db_handler.get_db_connection()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
-            "SELECT id, name, stream_url FROM cctv_locations "
+            "SELECT id, name, stream_url, lat, lng FROM cctv_locations "
             "WHERE stream_url IS NOT NULL AND stream_url != '' "
             "ORDER BY id"
         )
@@ -230,79 +342,164 @@ def gpu_scan_job():
         return
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    scanned = 0
-    errors = 0
+    ts_unix   = time.time()
+    scanned   = 0
+    errors    = 0
     total_count = 0
 
-    vdet = det.VideoDetector()
-
-    def _scan_one(cam):
-        nonlocal scanned, errors, total_count
+    # ── Step 1: Grab semua frame secara paralel (I/O bound) ───────────────────
+    def _grab(cam):
+        from core.detector import _grab_frame
         try:
-            count = vdet.get_vehicle_count(cam["stream_url"], cam["id"])
-            if count is None:
-                return
-            # Estimasi kecepatan hanya jika ada ≥2 kendaraan
-            # (optical flow mengukur noise kamera saat jalan kosong → hasil tidak valid)
-            speed = None
-            if count >= 2:
-                try:
-                    speed = vdet.estimate_speed(cam["stream_url"], cam["id"])
-                except Exception:
-                    pass
-            weather_text = "Cerah"
-            new_status, _ = calculate_decision(count, weather_text)
+            frame = _grab_frame(_resolve_stream_url(cam["stream_url"]), timeout_s=4)
+            if frame is not None:
+                return {"cam_id": cam["id"], "cam": cam, "img": frame, "timestamp": ts_unix}
+            else:
+                _cam_health_err(cam["id"])
+        except Exception as e:
+            logger.warning("[GPU Scanner] grab cam %s: %s", cam.get("id"), e)
+            _cam_health_err(cam["id"])
+        return None
+
+    with ThreadPoolExecutor(max_workers=24) as ex:
+        grabbed = [r for r in ex.map(_grab, cameras) if r is not None]
+
+    if not grabbed:
+        logger.warning("[GPU Scanner] Tidak ada frame berhasil diambil")
+        return
+
+    logger.info("[GPU Scanner] Grabbed %d/%d frame", len(grabbed), len(cameras))
+
+    # ── Step 2 & 3: Kirim batch ke GPU — 1 forward pass untuk semua frame ─────
+    CHUNK = 32   # sesuai BATCH_SIZE di gpu_service_v4 (VRAM L40S aman hingga 32)
+    batch_results = []
+    use_batch = False
+
+    try:
+        for i in range(0, len(grabbed), CHUNK):
+            chunk = grabbed[i:i+CHUNK]
+            res   = det.infer_batch_remote(chunk)
+            batch_results.extend(res)
+        use_batch = True
+        logger.info("[GPU Scanner] Batch inference selesai — %d hasil", len(batch_results))
+    except Exception as e:
+        logger.warning("[GPU Scanner] Batch gagal (%s), fallback 1-by-1", e)
+
+    # ── Fallback: jika batch endpoint belum ada (gpu_service v3) ──────────────
+    if not use_batch:
+        vdet = det.VideoDetector()
+        for item in grabbed:
+            try:
+                count, _, _, _ = det._infer_remote(item["img"])
+                batch_results.append({
+                    "cam_id": item["cam_id"],
+                    "vehicle_count": count,
+                    "class_counts": {},
+                    "speed_kmh": None,
+                })
+            except Exception as e:
+                errors += 1
+                logger.warning("[GPU Scanner] fallback cam %s: %s", item["cam_id"], e)
+
+    # ── Step 4: Update DB paralel ──────────────────────────────────────────────
+    cam_map = {c["id"]: c for c in cameras}
+
+    def _update_db(res):
+        nonlocal scanned, errors, total_count
+        cam_id = res.get("cam_id")
+        count  = res.get("vehicle_count", 0)
+        speed  = res.get("speed_kmh")
+        if count is None or "error" in res:
+            return
+        try:
+            cam = cam_map.get(cam_id, {})
+            _, new_status = calculate_decision(count, "Cerah"), calculate_decision(count, "Cerah")
+            new_status = calculate_decision(count, "Cerah")[0]
             risk = min(60 if count > 40 else (20 if count >= 20 else 0), 100)
-            db_handler.insert_log(cam["id"], count, timestamp)
+            db_handler.insert_log(cam_id, count, timestamp)
             conn2 = db_handler.get_db_connection()
-            cur2 = conn2.cursor()
+            cur2  = conn2.cursor()
             cur2.execute(
                 """UPDATE current_traffic
                    SET vehicles=%s, status=%s, risk_score=%s,
                        last_update=%s, last_gpu_scan=%s, speed_kmh=%s
                    WHERE id=%s""",
-                (count, new_status, risk, timestamp, timestamp, speed, cam["id"])
+                (count, new_status, risk, timestamp, timestamp, speed, cam_id)
             )
-            conn2.commit()
-            conn2.close()
-            scanned += 1
+            conn2.commit(); conn2.close()
+            scanned     += 1
             total_count += count
+            prev_count = _cam_health.get(cam_id, {}).get("last_count", 0)
+            h = _cam_health.get(cam_id, {})
+            h["last_count"] = count
+            h["speed_kmh"]  = speed
+            _cam_health_ok(cam_id)
+            # Incident detection — emit jika ada perubahan state
+            cam_info = cam_map.get(cam_id, {})
+            inc_changed = _run_incident_detection(
+                cam_id,
+                cam_info.get("name", f"Kamera {cam_id}"),
+                cam_info.get("lat") or 0.0,
+                cam_info.get("lng") or 0.0,
+                count, speed, prev_count,
+            )
+            if inc_changed:
+                try:
+                    socketio.emit("incident_alert", {
+                        "incidents": list(_active_incidents.values()),
+                        "cam_id":    cam_id,
+                        "ts":        time.time(),
+                    })
+                except Exception:
+                    pass
         except Exception as e:
             errors += 1
-            logger.warning("[GPU Scanner] cam %s error: %s", cam.get("id"), e)
+            _cam_health_err(cam_id)
+            logger.warning("[GPU Scanner] DB update cam %s: %s", cam_id, e)
 
-    with ThreadPoolExecutor(max_workers=12) as ex:
-        list(ex.map(_scan_one, cameras))
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        list(ex.map(_update_db, batch_results))
 
     avg = round(total_count / scanned, 1) if scanned else 0
     _gpu_state["scan_stats"].update({
-        "last_scan": timestamp,
+        "last_scan":       timestamp,
         "cameras_scanned": scanned,
-        "errors": errors,
-        "avg_count": avg,
+        "errors":          errors,
+        "avg_count":       avg,
     })
-    logger.info("[GPU Scanner] ✅ %d/%d kamera | avg %s kend | %d error",
-                scanned, len(cameras), avg, errors)
+    logger.info("[GPU Scanner] ✅ %d/%d kamera | avg %.1f kend | %d error | batch=%s",
+                scanned, len(cameras), avg, errors, use_batch)
 
     try:
         updated = db_handler.get_all_cctv_status()
         socketio.emit("traffic_update", updated)
         socketio.emit("gpu_scan_complete", {
-            "timestamp": timestamp,
+            "timestamp":       timestamp,
             "cameras_scanned": scanned,
-            "avg_count": avg,
+            "avg_count":       avg,
+            "batch_mode":      use_batch,
         })
     except Exception as e:
         logger.warning("[GPU Scanner] emit error: %s", e)
 
 
+from core.dataset_collector import run_collection_round, get_stats as _ds_get_stats
+
+def _dataset_collection_job():
+    """Ambil 1 frame per kamera aktif, auto-label, simpan ke dataset/ setiap 30 menit."""
+    run_collection_round(db_handler, detector.model)
+
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=mining_job,  trigger="interval", minutes=2,  max_instances=1, coalesce=True)
 scheduler.add_job(func=gpu_scan_job, trigger="interval", seconds=60, max_instances=1, coalesce=True, id="gpu_scanner")
+scheduler.add_job(func=_dataset_collection_job, trigger="interval", minutes=30,
+                  max_instances=1, coalesce=True, id="dataset_collector",
+                  next_run_time=datetime.now())   # jalankan langsung saat start
 scheduler.start()
 
 logger.info("✅ Mode LIVE aktif — Mining & YOLO diaktifkan. Data diperbarui setiap 2 menit (4 parallel workers).")
 logger.info("✅ GPU Scanner aktif — scan %d kamera JTD setiap 60 detik jika GPU online.", 0)
+logger.info("✅ Dataset Collector aktif — ambil frame tiap 30 menit, auto-label dengan YOLO.")
 
 
 def _ts_str(v):
@@ -776,7 +973,7 @@ def now_vs_usual(location_id):
     cur.close()
     conn.close()
 
-    current_hour = datetime.now().hour
+    current_hour = _jak_hour()
 
     result = evaluate_now_vs_usual(
         now=now_value,
@@ -887,7 +1084,7 @@ def predict_next_hour(location_id):
 
     now_val = int(row["vehicles"] or 0)
 
-    next_hour = (datetime.now().hour + 1) % 24
+    next_hour = (_jak_hour() + 1) % 24
     usual_next = float(db_handler.get_hourly_usual_traffic(location_id, next_hour) or 0)
 
     predicted = int((0.6 * usual_next) + (0.4 * now_val))
@@ -910,6 +1107,8 @@ def predict_next_hour(location_id):
         "location_id": location_id,
         "now": now_val,
         "predicted": predicted,
+        "next_hour": next_hour,
+        "next_hour_label": f"{String(next_hour).zfill(2)}:00" if False else f"{next_hour:02d}:00",
         "change_percent": round(delta_pct, 1),
         "status": status,
         "label": label,
@@ -2041,9 +2240,25 @@ def chat_stream():
         + (pred_context if pred_context else "")
     )
 
-    # ── Tambah konteks user (kendaraan, rute aktif, tol, BBM, banjir) ──────
+    # ── Tambah konteks user (kendaraan, rute aktif, tol, BBM, banjir, traffic) ──
     if user_context:
         ctx = []
+
+        # Live traffic snapshot — selalu ada dari frontend
+        lt = user_context.get("live_traffic", {})
+        if lt:
+            padat_list  = lt.get("padat", [])
+            lancar_list = lt.get("lancar", [])
+            total_cams  = lt.get("total_cameras", 0)
+            if padat_list:
+                padat_str = ", ".join(f"{c['name']} ({c['vehicles']} kend)" for c in padat_list)
+                ctx.append(f"📍 LOKASI PADAT SAAT INI ({len(padat_list)} dari {total_cams}): {padat_str}")
+            else:
+                ctx.append(f"📍 Tidak ada lokasi PADAT saat ini dari {total_cams} kamera.")
+            if lancar_list:
+                lancar_str = ", ".join(f"{c['name']} ({c['vehicles']} kend)" for c in lancar_list)
+                ctx.append(f"✅ LOKASI PALING LANCAR: {lancar_str}")
+
         if user_context.get("vehicle"):
             ctx.append(f"Kendaraan user: {user_context['vehicle']}")
         if user_context.get("fuel"):
@@ -2052,7 +2267,7 @@ def chat_stream():
             r = user_context["route"]
             ctx.append(
                 f"Rute aktif: {r.get('from','?')} → {r.get('to','?')}, "
-                f"{r.get('distance','?')} km, {r.get('time','?')} menit"
+                f"{r.get('distance','?')} km, estimasi {r.get('time','?')} menit"
             )
         if user_context.get("toll"):
             t = user_context["toll"]
@@ -2064,13 +2279,32 @@ def chat_stream():
         if user_context.get("flood_warning"):
             zones = ", ".join(f"{z['name']} ({z['risk']})" for z in user_context["flood_warning"])
             ctx.append(f"⚠️ RUTE MELEWATI ZONA RAWAN BANJIR: {zones}")
-        if user_context.get("route_cameras"):
-            ctx.append(f"Kamera CCTV di rute: {', '.join(user_context['route_cameras'])}")
+
+        # Route cameras — sekarang berupa objek {name, vehicles, status}
+        route_cams = user_context.get("route_cameras", [])
+        if route_cams:
+            if isinstance(route_cams[0], dict):
+                cam_lines = [f"{c['name']} → {c['status']} ({c['vehicles']} kend)" for c in route_cams]
+                ctx.append(f"📹 Kondisi CCTV di sepanjang rute:\n  " + "\n  ".join(cam_lines))
+            else:
+                ctx.append(f"Kamera CCTV di rute: {', '.join(route_cams)}")
+
+        # Kemacetan di rute aktif
+        congested = user_context.get("congested_on_route", [])
+        if congested:
+            names = ", ".join(c["name"] for c in congested)
+            ctx.append(
+                f"🚨 PERINGATAN: {len(congested)} titik PADAT di rute ini: {names}. "
+                f"Rekomendasikan rute alternatif jika ditanya."
+            )
+
         if ctx:
             system_content += (
-                "\n\n=== KONTEKS USER SAAT INI ===\n"
+                "\n\n=== KONTEKS REAL-TIME USER ===\n"
                 + "\n".join(ctx)
-                + "\nGunakan informasi ini untuk menjawab pertanyaan user dengan lebih akurat dan personal."
+                + "\n\nINSTRUKSI: Gunakan data traffic di atas untuk memberi saran rute yang konkret. "
+                "Sebutkan nama jalan spesifik yang lancar atau padat. "
+                "Jika rute user melewati titik PADAT, sarankan rute alternatif berdasarkan lokasi yang LANCAR."
             )
 
     def _sse(obj):
@@ -2467,6 +2701,36 @@ def gpu_scan_now():
     return jsonify({"ok": True, "message": "GPU scan triggered"})
 
 
+def _gpu_proxy(path, method="GET", **kwargs):
+    """Forward request ke GPU service."""
+    url = _gpu_state.get("url", "").rstrip("/")
+    if not url:
+        return jsonify({"error": "GPU service tidak terdaftar"}), 503
+    try:
+        r = requests.request(method, f"{url}/{path}", timeout=15, **kwargs)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+@app.route("/api/gpu/train/check")
+def gpu_train_check():
+    return _gpu_proxy("train/check")
+
+@app.route("/api/gpu/train/status")
+def gpu_train_status():
+    return _gpu_proxy("train/status")
+
+@app.route("/api/gpu/train/start", methods=["POST"])
+def gpu_train_start():
+    body = request.get_json(silent=True) or {}
+    dataset = body.get("dataset", "/home/jovyan/jaktraffic/dataset_merged")
+    return _gpu_proxy("train/start", method="POST", params={"dataset": dataset})
+
+@app.route("/api/gpu/train/stop", methods=["POST"])
+def gpu_train_stop():
+    return _gpu_proxy("train/stop", method="POST")
+
+
 YOLO_MODEL_DIR  = os.path.join(os.path.dirname(__file__), "models")
 YOLO_MODEL_PATH = os.path.join(YOLO_MODEL_DIR, "jaktraffic_yolo.pt")
 YOLO_META_PATH  = os.path.join(YOLO_MODEL_DIR, "jaktraffic_yolo_meta.json")
@@ -2526,6 +2790,108 @@ def yolo_model_info():
     })
 
 
+@app.route("/api/gpu-service")
+def gpu_service_script():
+    """Serve gpu_service_v3.py ke GPU server agar bisa di-wget langsung."""
+    script_path = os.path.join(os.path.dirname(__file__), "..", "training", "gpu_service_v3.py")
+    script_path = os.path.normpath(script_path)
+    if not os.path.exists(script_path):
+        return jsonify({"error": "gpu_service_v3.py tidak ditemukan"}), 404
+    from flask import send_file
+    return send_file(script_path, as_attachment=False,
+                     download_name="gpu_service_v3.py",
+                     mimetype="text/x-python")
+
+
+@app.route("/api/gpu-service/v4")
+def gpu_service_v4_script():
+    """Serve gpu_service_v4.py (ByteTrack + batch inference)."""
+    script_path = os.path.join(os.path.dirname(__file__), "..", "training", "gpu_service_v4.py")
+    script_path = os.path.normpath(script_path)
+    if not os.path.exists(script_path):
+        return jsonify({"error": "gpu_service_v4.py tidak ditemukan"}), 404
+    from flask import send_file
+    return send_file(script_path, as_attachment=False,
+                     download_name="gpu_service_v4.py",
+                     mimetype="text/x-python")
+
+
+@app.route("/api/training/yolo11l")
+def training_yolo11l_script():
+    """Serve 02_train_yolo11l.py untuk dijalankan di GPU server."""
+    script_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "training", "02_train_yolo11l.py"))
+    if not os.path.exists(script_path):
+        return jsonify({"error": "02_train_yolo11l.py tidak ditemukan"}), 404
+    from flask import send_file
+    return send_file(script_path, as_attachment=False,
+                     download_name="02_train_yolo11l.py",
+                     mimetype="text/x-python")
+
+@app.route("/api/training/yolo11x")
+def training_yolo11x_script():
+    """Serve 02_train_yolo11x.py untuk dijalankan di GPU server."""
+    script_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "training", "02_train_yolo11x.py"))
+    if not os.path.exists(script_path):
+        return jsonify({"error": "02_train_yolo11x.py tidak ditemukan"}), 404
+    from flask import send_file
+    return send_file(script_path, as_attachment=False,
+                     download_name="02_train_yolo11x.py",
+                     mimetype="text/x-python")
+
+@app.route("/api/gpu/model/backup", methods=["POST"])
+def gpu_model_backup():
+    """Minta GPU service push model-nya ke backend untuk backup permanen."""
+    return _gpu_proxy("model/push", method="POST")
+
+@app.route("/api/gpu/model/info")
+def gpu_model_info():
+    """Info model yang sedang berjalan di GPU service."""
+    return _gpu_proxy("model/info")
+
+@app.route("/api/dataset/stats")
+def dataset_stats():
+    """Status dataset yang sudah terkumpul."""
+    return jsonify(_ds_get_stats())
+
+@app.route("/api/dataset/collect-now", methods=["POST"])
+def dataset_collect_now():
+    """Trigger pengumpulan dataset sekarang (tidak tunggu jadwal 30 menit)."""
+    def _run():
+        run_collection_round(db_handler, detector.model)
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "message": "Pengumpulan dimulai di background"})
+
+@app.route("/api/dataset/download")
+def dataset_download():
+    """Download seluruh dataset sebagai ZIP (untuk training di Colab/RunPod)."""
+    import zipfile, io
+    from flask import send_file as _sf
+    from core.dataset_collector import DATASET_DIR
+    if not DATASET_DIR.exists():
+        return jsonify({"error": "Dataset belum ada"}), 404
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in sorted(DATASET_DIR.rglob("*")):
+            if f.is_file():
+                zf.write(f, f.relative_to(DATASET_DIR.parent))
+    buf.seek(0)
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    return _sf(buf, as_attachment=True,
+               download_name=f"jaktraffic_dataset_{ts}.zip",
+               mimetype="application/zip")
+
+@app.route("/api/gpu-service/v4")
+def serve_gpu_service_v4():
+    """Serve gpu_service_v4.py agar GPU server bisa self-update."""
+    script_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "training", "gpu_service_v4.py"))
+    if not os.path.exists(script_path):
+        return jsonify({"error": "gpu_service_v4.py tidak ditemukan"}), 404
+    from flask import send_file
+    return send_file(script_path, as_attachment=False,
+                     download_name="gpu_service_v4.py",
+                     mimetype="text/x-python")
+
+
 @app.route("/api/camera-speed/<int:cam_id>")
 def camera_speed(cam_id):
     """Estimasi kecepatan kendaraan on-demand untuk satu kamera via optical flow.
@@ -2573,7 +2939,7 @@ def camera_speed(cam_id):
     # Hitung on-demand
     try:
         vdet = det.VideoDetector()
-        speed = vdet.estimate_speed(stream_url, cam_id)
+        speed = vdet.estimate_speed(_resolve_stream_url(stream_url), cam_id)
         if speed is None:
             return jsonify({"error": "Stream tidak bisa dibuka"}), 502
 
@@ -3437,6 +3803,458 @@ def undo_edit():
             errors.append({'backup': bak_path, 'error': str(e)})
 
     return jsonify({'success': len(restored) > 0, 'restored': restored, 'errors': errors})
+
+
+# ======================================================
+# 📊 LAPORAN PERIODIK
+# ======================================================
+@app.route("/api/reports/periodic")
+def periodic_report():
+    """
+    Generate laporan periodik lalu lintas.
+    ?range=7d|30d|today
+    Returns aggregated stats: total scans, peak hours, busiest corridors, trends.
+    """
+    range_param = request.args.get("range", "7d")
+    delta_map   = {"today": timedelta(days=1), "7d": timedelta(days=7), "30d": timedelta(days=30)}
+    delta       = delta_map.get(range_param, timedelta(days=7))
+
+    try:
+        conn = db_handler.get_db_connection()
+        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # ── 1. Total records & rentang waktu ─────────────────────────────
+        cur.execute("""
+            SELECT COUNT(*) AS total_records,
+                   MIN(timestamp) AS from_ts,
+                   MAX(timestamp) AS to_ts,
+                   AVG(vehicles)  AS global_avg,
+                   MAX(vehicles)  AS global_max
+            FROM traffic_logs
+            WHERE timestamp >= NOW() - %s::interval
+        """, (str(delta),))
+        summary = dict(cur.fetchone() or {})
+
+        # ── 2. Jam tersibuk (per jam dalam rentang) ───────────────────────
+        cur.execute("""
+            SELECT EXTRACT(HOUR FROM timestamp)::int AS hour,
+                   AVG(vehicles) AS avg_v,
+                   MAX(vehicles) AS max_v,
+                   COUNT(*)      AS samples
+            FROM traffic_logs
+            WHERE timestamp >= NOW() - %s::interval
+            GROUP BY hour ORDER BY avg_v DESC LIMIT 6
+        """, (str(delta),))
+        peak_hours = [dict(r) for r in cur.fetchall()]
+
+        # ── 3. Hari tersibuk ─────────────────────────────────────────────
+        cur.execute("""
+            SELECT TO_CHAR(timestamp, 'Day') AS day_name,
+                   EXTRACT(DOW FROM timestamp)::int AS dow,
+                   AVG(vehicles) AS avg_v
+            FROM traffic_logs
+            WHERE timestamp >= NOW() - %s::interval
+            GROUP BY day_name, dow ORDER BY avg_v DESC
+        """, (str(delta),))
+        peak_days = [dict(r) for r in cur.fetchall()]
+
+        # ── 4. Top 10 koridor terpadat ────────────────────────────────────
+        cur.execute("""
+            SELECT tl.location_id AS id,
+                   COALESCE(cl.name, ct.name) AS name,
+                   AVG(tl.vehicles)  AS avg_v,
+                   MAX(tl.vehicles)  AS peak_v,
+                   COUNT(*)          AS samples
+            FROM traffic_logs tl
+            LEFT JOIN cctv_locations cl ON tl.location_id = cl.id
+            LEFT JOIN current_traffic ct ON tl.location_id = ct.id
+            WHERE tl.timestamp >= NOW() - %s::interval
+            GROUP BY tl.location_id, cl.name, ct.name
+            ORDER BY avg_v DESC LIMIT 10
+        """, (str(delta),))
+        top_corridors = [dict(r) for r in cur.fetchall()]
+
+        # ── 5. Tren harian (rata-rata per hari) ──────────────────────────
+        cur.execute("""
+            SELECT DATE(timestamp) AS day,
+                   AVG(vehicles)   AS avg_v,
+                   MAX(vehicles)   AS peak_v,
+                   COUNT(DISTINCT location_id) AS cameras
+            FROM traffic_logs
+            WHERE timestamp >= NOW() - %s::interval
+            GROUP BY day ORDER BY day
+        """, (str(delta),))
+        daily_trend = [dict(r) for r in cur.fetchall()]
+        for d in daily_trend:
+            d["day"] = str(d["day"])
+
+        # ── 6. Laporan masyarakat dalam periode ───────────────────────────
+        cur.execute("""
+            SELECT report_type, COUNT(*) AS cnt, status
+            FROM crowd_reports
+            WHERE created_at >= NOW() - %s::interval
+            GROUP BY report_type, status ORDER BY cnt DESC
+        """, (str(delta),))
+        crowd_summary = [dict(r) for r in cur.fetchall()]
+
+        conn.close()
+
+        for k in ("from_ts","to_ts"):
+            if summary.get(k):
+                summary[k] = str(summary[k])
+        for row in summary, *peak_hours, *peak_days, *top_corridors:
+            for key in list(row.keys()):
+                if hasattr(row[key], '__float__'):
+                    row[key] = round(float(row[key]), 2)
+
+        return jsonify({
+            "range":        range_param,
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "summary":      summary,
+            "peak_hours":   peak_hours,
+            "peak_days":    peak_days,
+            "top_corridors":top_corridors,
+            "daily_trend":  daily_trend,
+            "crowd_summary":crowd_summary,
+        })
+    except Exception as e:
+        logger.error("[periodic_report] %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ======================================================
+# 🔮 PREDIKSI LALU LINTAS (Lightweight ML)
+# ======================================================
+@app.route("/api/predict/corridor/<int:location_id>")
+def predict_corridor(location_id):
+    """
+    Prediksi kepadatan 1–3 jam ke depan untuk satu koridor.
+    Metode: weighted moving average historis per jam (7 hari terakhir)
+    dikombinasikan dengan tren saat ini.
+    """
+    horizon = min(int(request.args.get("horizon", 3)), 6)
+    try:
+        conn = db_handler.get_db_connection()
+        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        now_hour = _jak_hour()
+
+        # Rata-rata historis per jam (7 hari) untuk jam ini + beberapa jam ke depan
+        hours_needed = [(now_hour + h) % 24 for h in range(horizon + 1)]
+        cur.execute("""
+            SELECT EXTRACT(HOUR FROM timestamp)::int AS hour,
+                   AVG(vehicles) AS avg_v,
+                   STDDEV(vehicles) AS std_v,
+                   COUNT(*) AS samples
+            FROM traffic_logs
+            WHERE location_id = %s
+              AND timestamp >= NOW() - INTERVAL '14 days'
+            GROUP BY hour ORDER BY hour
+        """, (location_id,))
+        hist = {int(r["hour"]): r for r in cur.fetchall()}
+
+        # Nilai saat ini
+        cur.execute("""
+            SELECT vehicles FROM traffic_logs
+            WHERE location_id = %s
+            ORDER BY timestamp DESC LIMIT 5
+        """, (location_id,))
+        recent = [r["vehicles"] for r in cur.fetchall() if r["vehicles"] is not None]
+        current_v = sum(recent) / len(recent) if recent else 0
+
+        # Prediksi: interpolasi antara nilai saat ini dan historis per jam
+        predictions = []
+        for h in range(1, horizon + 1):
+            target_hour = (now_hour + h) % 24
+            hist_row    = hist.get(target_hour, {})
+            hist_avg    = float(hist_row.get("avg_v") or current_v)
+            hist_std    = float(hist_row.get("std_v") or 5.0)
+            samples     = int(hist_row.get("samples") or 0)
+
+            # Blend: semakin jauh ke depan, semakin bergantung pada historis
+            blend   = min(h / horizon, 1.0)
+            pred_v  = round((1 - blend) * current_v + blend * hist_avg, 1)
+            status  = "padat" if pred_v > 40 else "ramai" if pred_v > 20 else "lancar"
+            color   = "#f43f5e" if pred_v > 40 else "#f59e0b" if pred_v > 20 else "#22c55e"
+            conf    = min(int(samples / 5 * 100), 95) if samples else 30
+
+            predictions.append({
+                "hour":       target_hour,
+                "label":      f"{target_hour:02d}:00",
+                "vehicles":   pred_v,
+                "hist_avg":   round(hist_avg, 1),
+                "hist_std":   round(hist_std, 1),
+                "status":     status,
+                "color":      color,
+                "confidence": conf,
+            })
+
+        cam_name = None
+        cur.execute("SELECT COALESCE(name,'') FROM current_traffic WHERE id=%s", (location_id,))
+        row = cur.fetchone()
+        if row: cam_name = list(row.values())[0]
+        conn.close()
+
+        return jsonify({
+            "location_id": location_id,
+            "name":        cam_name,
+            "current":     round(current_v, 1),
+            "current_hour": now_hour,
+            "predictions": predictions,
+            "method":      "weighted-historical-blend",
+        })
+    except Exception as e:
+        logger.error("[predict_corridor] %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/predict/overview")
+def predict_overview():
+    """
+    Prediksi global Jakarta 1 jam ke depan — semua koridor sekaligus.
+    Returns: daftar location_id → predicted_vehicles untuk 1h ke depan.
+    """
+    try:
+        conn = db_handler.get_db_connection()
+        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        now_h  = _jak_hour()
+        next_h = (now_h + 1) % 24
+
+        cur.execute("""
+            SELECT tl.location_id AS id,
+                   AVG(tl.vehicles) AS hist_avg,
+                   ct.vehicles AS current_v,
+                   COALESCE(cl.name, ct.name) AS name
+            FROM traffic_logs tl
+            LEFT JOIN current_traffic ct ON tl.location_id = ct.id
+            LEFT JOIN cctv_locations  cl ON tl.location_id = cl.id
+            WHERE tl.timestamp >= NOW() - INTERVAL '14 days'
+              AND EXTRACT(HOUR FROM tl.timestamp)::int = %s
+            GROUP BY tl.location_id, ct.vehicles, cl.name, ct.name
+        """, (next_h,))
+        rows = cur.fetchall()
+        conn.close()
+
+        result = []
+        for r in rows:
+            cur_v  = float(r["current_v"] or 0)
+            hist_v = float(r["hist_avg"] or cur_v)
+            pred_v = round(0.45 * cur_v + 0.55 * hist_v, 1)
+            result.append({
+                "id":       r["id"],
+                "name":     r["name"],
+                "pred":     pred_v,
+                "current":  round(cur_v, 1),
+                "status":   "padat" if pred_v > 40 else "ramai" if pred_v > 20 else "lancar",
+            })
+
+        return jsonify({"hour": next_h, "predictions": result, "count": len(result)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ======================================================
+# 🚨 INCIDENT DETECTION
+# ======================================================
+@app.route("/api/incidents")
+def get_incidents():
+    """Return active incidents terdeteksi oleh GPU scanner."""
+    return jsonify({
+        "incidents": list(_active_incidents.values()),
+        "total": len(_active_incidents),
+        "ts": time.time(),
+    })
+
+# 📡 CAMERA HEALTH MONITORING
+# ======================================================
+@app.route("/api/cameras/health")
+def cameras_health():
+    """
+    Return per-camera health: last_seen, error_count, status, calibration.
+    Gabungan in-memory scan results + DB camera_config.
+    """
+    try:
+        cctv = db_handler.get_all_cctv_status()
+        configs = db_handler.get_camera_configs()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    now = datetime.now()
+    result = []
+    for cam in cctv:
+        cam_id = cam["id"]
+        h      = _cam_health.get(cam_id, {})
+        cfg    = configs.get(cam_id, {})
+
+        last_seen = h.get("last_seen")
+        if last_seen:
+            try:
+                ls_dt  = datetime.strptime(last_seen, "%Y-%m-%d %H:%M:%S")
+                age_s  = int((now - ls_dt).total_seconds())
+            except Exception:
+                age_s = None
+        else:
+            last_seen = _ts_str(cam.get("last_gpu_scan"))
+            age_s = None
+            if last_seen:
+                try:
+                    ls_dt = datetime.strptime(last_seen, "%Y-%m-%d %H:%M:%S")
+                    age_s = int((now - ls_dt).total_seconds())
+                except Exception:
+                    pass
+
+        consec = h.get("consecutive_errors", 0)
+        has_stream = bool(cam.get("stream_url") or cam.get("preview_url"))
+
+        if cfg.get("maintenance"):
+            cam_status = "maintenance"
+        elif not has_stream:
+            cam_status = "no_stream"
+        elif age_s is None:
+            cam_status = "unknown"
+        elif consec >= 3:
+            cam_status = "offline"
+        elif age_s > 300:
+            cam_status = "stale"
+        else:
+            cam_status = "online"
+
+        result.append({
+            "id":                 cam_id,
+            "name":               cam.get("name"),
+            "lat":                cam.get("lat"),
+            "lng":                cam.get("lng"),
+            "road_type":          cam.get("road_type", "city"),
+            "has_stream":         has_stream,
+            "last_seen":          last_seen,
+            "last_seen_age_s":    age_s,
+            "last_count":         h.get("last_count"),
+            "speed_kmh":          h.get("speed_kmh"),
+            "success_count":      h.get("success_count", 0),
+            "error_count":        h.get("error_count", 0),
+            "consecutive_errors": consec,
+            "status":             cam_status,
+            "maintenance":        bool(cfg.get("maintenance", False)),
+            "maintenance_note":   cfg.get("maintenance_note", ""),
+            "pix_per_meter":      float(cfg.get("pix_per_meter", 8.0)),
+        })
+
+    online   = sum(1 for r in result if r["status"] == "online")
+    offline  = sum(1 for r in result if r["status"] in ("offline", "stale"))
+    maint    = sum(1 for r in result if r["status"] == "maintenance")
+    no_stream = sum(1 for r in result if r["status"] == "no_stream")
+
+    return jsonify({
+        "cameras": result,
+        "summary": {
+            "total": len(result),
+            "online": online,
+            "offline": offline,
+            "maintenance": maint,
+            "no_stream": no_stream,
+        }
+    })
+
+
+@app.route("/api/cameras/<int:cam_id>/config", methods=["PUT"])
+def update_camera_config(cam_id):
+    """Update konfigurasi kamera: maintenance status dan kalibrasi pix_per_meter."""
+    data = request.json or {}
+    try:
+        db_handler.upsert_camera_config(
+            cam_id       = cam_id,
+            maintenance  = data.get("maintenance"),
+            maintenance_note = data.get("maintenance_note"),
+            pix_per_meter    = data.get("pix_per_meter"),
+        )
+        if cam_id in _cam_health:
+            _cam_health[cam_id]["maintenance"] = data.get("maintenance", False)
+        return jsonify({"status": "ok", "cam_id": cam_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ======================================================
+# 📋 CROWD REPORTS (Laporan Masyarakat)
+# ======================================================
+import hashlib as _hashlib
+
+@app.route("/api/reports", methods=["GET"])
+def get_reports():
+    """Ambil laporan aktif (pending + verified) dalam 24 jam terakhir."""
+    include_resolved = request.args.get("all") == "1"
+    try:
+        reports = db_handler.get_crowd_reports(include_resolved=include_resolved)
+        return jsonify({"reports": reports, "count": len(reports)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/reports", methods=["POST"])
+def add_report():
+    """User submit laporan kondisi jalan."""
+    data = request.json or {}
+    report_type  = data.get("type", "")
+    lat          = data.get("lat")
+    lng          = data.get("lng")
+    description  = data.get("description", "")
+
+    VALID_TYPES = {"macet", "banjir", "kecelakaan", "tutup", "galian", "longsor"}
+    if report_type not in VALID_TYPES:
+        return jsonify({"error": "Tipe laporan tidak valid"}), 400
+    if lat is None or lng is None:
+        return jsonify({"error": "Koordinat wajib diisi"}), 400
+    try:
+        lat, lng = float(lat), float(lng)
+    except Exception:
+        return jsonify({"error": "Koordinat tidak valid"}), 400
+    if not (-7.5 < lat < -5.5 and 106.0 < lng < 107.5):
+        return jsonify({"error": "Koordinat di luar wilayah Jakarta"}), 400
+
+    ip_raw  = request.headers.get("X-Forwarded-For", request.remote_addr) or ""
+    ip_hash = _hashlib.sha256(ip_raw.encode()).hexdigest()[:16]
+
+    try:
+        report_id = db_handler.add_crowd_report(report_type, lat, lng, description, ip_hash)
+        if report_id:
+            # Broadcast ke operator via WebSocket
+            socketio.emit("new_report", {
+                "id": report_id, "type": report_type,
+                "lat": lat, "lng": lng, "description": description,
+                "status": "pending", "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            return jsonify({"status": "ok", "id": report_id}), 201
+        return jsonify({"error": "Gagal menyimpan laporan"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/reports/<int:report_id>", methods=["PUT"])
+def update_report(report_id):
+    """Operator: ubah status laporan (verified / dismissed / resolved)."""
+    data   = request.json or {}
+    status = data.get("status", "")
+    VALID  = {"verified", "dismissed", "resolved", "pending"}
+    if status not in VALID:
+        return jsonify({"error": "Status tidak valid"}), 400
+    try:
+        db_handler.update_crowd_report(report_id, status, data.get("operator_note"))
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/reports/<int:report_id>", methods=["DELETE"])
+def delete_report(report_id):
+    """Operator: hapus laporan."""
+    try:
+        conn = db_handler.get_db_connection()
+        cur  = conn.cursor()
+        cur.execute("DELETE FROM crowd_reports WHERE id = %s", (report_id,))
+        conn.commit(); conn.close()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ======================================================

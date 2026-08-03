@@ -43,6 +43,18 @@ frontend/node_modules/.cache/
 *.onnx
 *.weights
 
+# Dataset & model folder (terlalu besar untuk git)
+backend/dataset/
+backend/models/
+
+# Training scripts lama / duplikat
+training/02_train_yolo11l.py
+training/02_train_yolo11x.py
+training/gpu_service_v3.py
+
+# Debug output
+backend/debug_views/
+
 # OS
 .DS_Store
 Thumbs.db

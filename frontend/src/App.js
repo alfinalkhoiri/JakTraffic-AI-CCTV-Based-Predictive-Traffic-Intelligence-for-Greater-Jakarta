@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import "leaflet.heat";
 import { io } from "socket.io-client";
 
 import {
@@ -188,72 +189,38 @@ const findNearestCCTV = (point, cctvList) => {
 };
 
 /* =============== Traffic Color Helper ================= */
+// ── Estimasi panjang antrian dari jumlah kendaraan + kecepatan ───────────────
+const queueMeters = (vehicles, speed) => {
+  const spd = speed != null ? speed : 999;
+  if (spd > 25 || vehicles < 5) return 0;
+  const spacing = spd < 5 ? 6.5 : 9.0; // meter per kendaraan (berhenti vs merayap)
+  return Math.round(vehicles * spacing);
+};
+
+// ── Heatmap layer (leaflet.heat) sebagai react-leaflet child component ────────
+function HeatmapLayer({ points, visible }) {
+  const map = useMap();
+  const layerRef = useRef(null);
+  useEffect(() => {
+    if (!visible) {
+      if (layerRef.current) { map.removeLayer(layerRef.current); layerRef.current = null; }
+      return;
+    }
+    if (layerRef.current) map.removeLayer(layerRef.current);
+    layerRef.current = L.heatLayer(points, {
+      radius: 45, blur: 30, maxZoom: 17, max: 1.0,
+      gradient: { 0.2: '#22c55e', 0.5: '#f59e0b', 0.75: '#ef4444', 1.0: '#7f1d1d' },
+    }).addTo(map);
+    return () => { if (layerRef.current) { map.removeLayer(layerRef.current); layerRef.current = null; } };
+  }, [points, visible, map]);
+  return null;
+}
+
 const getTrafficColor = (vehicles) => {
-  if (vehicles > 30) return "#ef4444"; // merah - padat
-  if (vehicles > 15) return "#f97316"; // oranye - ramai
+  if (vehicles > 40) return "#ef4444"; // merah - padat
+  if (vehicles > 20) return "#f97316"; // oranye - ramai
   return "#22c55e"; // hijau - lancar
 };
-
-/* =============== Signal Recommendation ================= */
-const getSignalRec = (vehicles) => {
-  if (vehicles > 40) return {
-    light: "green",
-    green: 90, red: 30,
-    label: "Perpanjang Fase Hijau",
-    note: "Volume tinggi — prioritaskan pergerakan kendaraan",
-    priority: "TINGGI",
-    color: "text-red-400",
-    bg: "bg-red-500/10 border-red-500/30",
-    dot: "#ef4444",
-  };
-  if (vehicles > 20) return {
-    light: "yellow",
-    green: 60, red: 45,
-    label: "Pertahankan Siklus Normal",
-    note: "Volume sedang — pertahankan siklus standar",
-    priority: "NORMAL",
-    color: "text-yellow-400",
-    bg: "bg-yellow-500/10 border-yellow-500/30",
-    dot: "#f59e0b",
-  };
-  return {
-    light: "red",
-    green: 30, red: 60,
-    label: "Kurangi Fase Hijau",
-    note: "Volume rendah — alihkan waktu ke jalur persimpangan",
-    priority: "RENDAH",
-    color: "text-emerald-400",
-    bg: "bg-emerald-500/10 border-emerald-500/30",
-    dot: "#22c55e",
-  };
-};
-
-/* =============== Traffic Light Component ================= */
-function TrafficLight({ active }) {
-  const lights = [
-    { key: "red",    hex: "#ef4444" },
-    { key: "yellow", hex: "#f59e0b" },
-    { key: "green",  hex: "#22c55e" },
-  ];
-  return (
-    <div style={{
-      background: "#111827", border: "2px solid #374151",
-      borderRadius: 10, padding: "10px 12px",
-      display: "inline-flex", flexDirection: "column",
-      gap: 7, alignItems: "center", flexShrink: 0,
-    }}>
-      {lights.map(l => (
-        <div key={l.key} style={{
-          width: 22, height: 22, borderRadius: "50%",
-          background: l.key === active ? l.hex : "#1e293b",
-          boxShadow: l.key === active ? `0 0 10px ${l.hex}, 0 0 20px ${l.hex}60` : "none",
-          border: `2px solid ${l.key === active ? l.hex : "#374151"}`,
-          transition: "all 0.4s ease",
-        }} />
-      ))}
-    </div>
-  );
-}
 
 /* =============== Route Step Helpers ================= */
 const MANEUVER_ICON = {
@@ -447,9 +414,13 @@ const gpsUserIcon = L.divIcon({
 /* ─── Leaflet: Follow GPS saat mode berkendara ───────────────────────────── */
 function GPSFollowHandler({ position, active }) {
   const map = useMap();
+  const lastPanRef = useRef(0);
   useEffect(() => {
     if (!active || !position) return;
-    map.setView([position.lat, position.lng], 17, { animate: true, duration: 0.6 });
+    const now = Date.now();
+    if (now - lastPanRef.current < 1000) return; // throttle: pan max 1x/detik
+    lastPanRef.current = now;
+    map.setView([position.lat, position.lng], 17, { animate: true, duration: 0.85 });
   }, [position, active, map]);
   return null;
 }
@@ -481,6 +452,17 @@ const INCIDENT_LABELS = {
   8: "Jalan Ditutup", 9: "Perbaikan Jalan", 11: "Banjir", 14: "Kendaraan Mogok",
 };
 const INCIDENT_EMOJI = { 1: "💥", 6: "🐢", 7: "🚧", 8: "⛔", 9: "🔧", 11: "🌊", 14: "🚗" };
+
+const aiIncidentIcon = (severity) => {
+  const bg  = severity === 'critical' ? '#ef4444' : '#f97316';
+  const glow= severity === 'critical' ? '#ef444480' : '#f9741680';
+  return L.divIcon({
+    className: '',
+    html: `<div style="width:32px;height:32px;background:${bg};border:2.5px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;box-shadow:0 0 14px ${glow},0 2px 6px rgba(0,0,0,.5);">🚨</div>`,
+    iconSize: [32, 32],
+    iconAnchor: [16, 16],
+  });
+};
 
 const incidentIcon = (category) => {
   const color = [1, 8].includes(category) ? "#ef4444" : [6].includes(category) ? "#f97316" : "#f59e0b";
@@ -617,12 +599,48 @@ export default function App() {
   const [sosDesc, setSosDesc]                 = useState('');
   const [sosSent, setSosSent]                 = useState(false);
 
+  // ── Laporan Masyarakat (Crowdsourcing) ─────────────────────────────────────
+  const [crowdReports, setCrowdReports]       = useState([]);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportType, setReportType]           = useState('macet');
+  const [reportDesc, setReportDesc]           = useState('');
+  const [reportPin, setReportPin]             = useState(null); // {lat,lng} — titik laporan
+  const [reportPickMode, setReportPickMode]   = useState(false); // klik peta untuk pin
+  const [reportSending, setReportSending]     = useState(false);
+  const [reportSent, setReportSent]           = useState(false);
+  const [showReports, setShowReports]         = useState(true);
+
+  // ── Rute Favorit ────────────────────────────────────────────────────────────
+  const [favRoutes, setFavRoutes] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('jak_fav_routes') || '[]'); } catch { return []; }
+  });
+  const [showFavModal, setShowFavModal] = useState(false);
+  const [favNotif, setFavNotif]         = useState(null);
+
+  // ── Insiden AI (GPU Scanner) ─────────────────────────────────────────────
+  const [aiIncidents,      setAiIncidents]      = useState([]);
+  const [aiIncidentNotif,  setAiIncidentNotif]  = useState(null);
+  const notifiedAIRef = useRef(new Set());
+
+  // ── Heatmap & Statistik Personal ─────────────────────────────────────────
+  const [showHeatmap,    setShowHeatmap]    = useState(false);
+  const [showIncidents,  setShowIncidents]  = useState(true);
+  const [showStatsModal, setShowStatsModal] = useState(false);
+  const [tripHistory,    setTripHistory]    = useState(() => {
+    try { return JSON.parse(localStorage.getItem('jak_trip_history') || '[]'); }
+    catch { return []; }
+  });
+  const wasDrivingRef = useRef(false);
+
   // ── Mode Berkendara ──────────────────────────────────────────────────────
   const [drivingMode, setDrivingMode]       = useState(false);
   const [currentStepIdx, setCurrentStepIdx] = useState(0);
   const [userGPS, setUserGPS]               = useState(null);
   const [userSpeedKmh, setUserSpeedKmh]     = useState(null);
+  const [simulating, setSimulating]         = useState(false);
   const gpsWatchRef      = useRef(null);
+  const simIntervalRef   = useRef(null);
+  const simCoordsRef     = useRef({ idx: 0, lat: 0, lng: 0 }); // posisi simulasi saat ini
   const currentStepRef   = useRef(0);   // ref agar GPS callback dapat nilai terbaru
   const routeStepsRef2   = useRef([]);  // ref salinan routeSteps untuk GPS callback
   const routeCoordsRef                    = useRef([]);
@@ -666,6 +684,23 @@ export default function App() {
 
   const speak = useCallback((text, interrupt = true) => {
     if (!voiceEnabledRef.current || !('speechSynthesis' in window)) return;
+    if (interrupt) window.speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.lang = 'id-ID'; utt.rate = 0.92; utt.pitch = 1.0;
+    const doSpeak = () => {
+      const voices = window.speechSynthesis.getVoices();
+      const id = voices.find(v => v.lang === 'id-ID') || voices.find(v => v.lang.startsWith('id'));
+      if (id) utt.voice = id;
+      window.speechSynthesis.speak(utt);
+    };
+    window.speechSynthesis.getVoices().length === 0
+      ? window.speechSynthesis.addEventListener('voiceschanged', doSpeak, { once: true })
+      : doSpeak();
+  }, []);
+
+  // Selalu bersuara saat simulasi — tidak bergantung pada toggle voice
+  const speakSim = useCallback((text, interrupt = true) => {
+    if (!('speechSynthesis' in window)) return;
     if (interrupt) window.speechSynthesis.cancel();
     const utt = new SpeechSynthesisUtterance(text);
     utt.lang = 'id-ID'; utt.rate = 0.92; utt.pitch = 1.0;
@@ -750,12 +785,157 @@ export default function App() {
       navigator.geolocation.clearWatch(gpsWatchRef.current);
       gpsWatchRef.current = null;
     }
+    if (simIntervalRef.current != null) {
+      clearInterval(simIntervalRef.current);
+      simIntervalRef.current = null;
+    }
+    setSimulating(false);
     setUserGPS(null); setUserSpeedKmh(null);
     window.speechSynthesis?.cancel();
   }, []);
 
+  const stopSimulation = useCallback(() => {
+    if (simIntervalRef.current != null) {
+      clearInterval(simIntervalRef.current);
+      simIntervalRef.current = null;
+    }
+    setSimulating(false);
+    setUserGPS(null); setUserSpeedKmh(null);
+  }, []);
+
+  const startSimulation = useCallback(() => {
+    const coords = routeCoordsRef.current;
+    if (!coords.length) return;
+
+    // Reset ke titik awal rute
+    simCoordsRef.current = { segIdx: 0, lat: coords[0][0], lng: coords[0][1] };
+    currentStepRef.current = 0;
+    routeStepsRef2.current = routeSteps;
+    setCurrentStepIdx(0);
+    setSimulating(true);
+    setUserGPS({ lat: coords[0][0], lng: coords[0][1] });
+    setUserSpeedKmh(40);
+
+    // Voice summary awal — bangun teks lalu hitung durasi ≈ 70 kata/menit × rate 0.92
+    const parts = ['Simulasi perjalanan dimulai.'];
+    if (searchFrom)           parts.push(`Dari ${searchFrom}.`);
+    if (searchTo)             parts.push(`Menuju ${searchTo}.`);
+    if (eta?.distance)        parts.push(`Jarak ${eta.distance} kilometer,`);
+    if (eta?.time)            parts.push(`estimasi ${eta.time} menit.`);
+    if (floodWarning?.length) parts.push(`Peringatan: ${floodWarning.length} zona banjir di rute.`);
+    if (tollEstimate)         parts.push(`Estimasi tol ${tollEstimate}.`);
+    const summaryText  = parts.join(' ');
+    const wordCount    = summaryText.split(' ').length;
+    const summaryDelayMs = Math.max(3000, Math.round((wordCount / 70) * 60000 / 0.92));
+
+    // Speak summary via SpeechSynthesisUtterance langsung agar bisa pakai onend
+    const _startInterval = () => {
+      const SIM_SPEED_MS = 11.1;
+      const INTERVAL_MS  = 150;
+      const ADVANCE_M    = SIM_SPEED_MS * (INTERVAL_MS / 1000);
+      let   lastWarnIdx  = -1;
+      simIntervalRef.current = setInterval(() => {
+      const { segIdx: prevSeg, lat: curLat, lng: curLng } = simCoordsRef.current;
+
+      if (prevSeg >= coords.length - 1) {
+        clearInterval(simIntervalRef.current);
+        simIntervalRef.current = null;
+        setSimulating(false);
+        const endParts = ['Simulasi selesai. Anda telah tiba di tujuan.'];
+        if (eta?.distance) endParts.push(`Total perjalanan ${eta.distance} kilometer`);
+        if (eta?.time)     endParts.push(`dalam ${eta.time} menit.`);
+        if (fuelEstimate)  endParts.push(`Estimasi bahan bakar ${fuelEstimate}.`);
+        speakSim(endParts.join(' '));
+        return;
+      }
+
+      // Gerakkan posisi maju ADVANCE_M meter sepanjang polyline
+      let remaining = ADVANCE_M;
+      let segIdx = prevSeg;
+      let lat = curLat;
+      let lng = curLng;
+
+      while (remaining > 0 && segIdx < coords.length - 1) {
+        const [nLat, nLng] = coords[segIdx + 1];
+        const d = haversineDistance(lat, lng, nLat, nLng);
+        if (d <= remaining) {
+          remaining -= d;
+          segIdx++;
+          lat = nLat;
+          lng = nLng;
+        } else {
+          const frac = remaining / d;
+          lat = lat + (nLat - lat) * frac;
+          lng = lng + (nLng - lng) * frac;
+          remaining = 0;
+        }
+      }
+
+      simCoordsRef.current = { segIdx, lat, lng };
+      setUserGPS({ lat, lng });
+
+      // Auto-advance langkah navigasi
+      const steps    = routeStepsRef2.current;
+      const stepIdx  = currentStepRef.current;
+      const target   = steps[stepIdx + 1];
+      if (target?.lat && target?.lng) {
+        const dist = haversineDistance(lat, lng, target.lat, target.lng);
+        if (dist < 200 && dist > 60 && lastWarnIdx !== stepIdx) {
+          lastWarnIdx = stepIdx;
+          speakSim(`Dalam ${Math.round(dist)} meter: ${maneuverLabel(target.type, target.modifier)}.`, false);
+        }
+        if (dist < 60) {
+          const newIdx = stepIdx + 1;
+          currentStepRef.current = newIdx;
+          lastWarnIdx = -1;
+          setCurrentStepIdx(newIdx);
+          const distTxt = target.distance > 0 ? ` dalam ${fmtDist(target.distance)}` : '';
+          speakSim(`${maneuverLabel(target.type, target.modifier)}${target.name ? ' di ' + target.name : ''}${distTxt}.`);
+        }
+      }
+    }, INTERVAL_MS);
+    }; // end _startInterval
+
+    // Speak summary via onend agar interval dimulai setelah summary selesai
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const utt = new SpeechSynthesisUtterance(summaryText);
+      utt.lang = 'id-ID'; utt.rate = 0.92; utt.pitch = 1.0;
+      const voices = window.speechSynthesis.getVoices();
+      const idVoice = voices.find(v => v.lang === 'id-ID') || voices.find(v => v.lang.startsWith('id'));
+      if (idVoice) utt.voice = idVoice;
+      utt.onend = _startInterval;
+      // Fallback: jika onend tidak terpicu dalam summaryDelayMs, mulai paksa
+      const fallback = setTimeout(_startInterval, summaryDelayMs);
+      utt.onend = () => { clearTimeout(fallback); _startInterval(); };
+      window.speechSynthesis.speak(utt);
+    } else {
+      _startInterval();
+    }
+  }, [routeSteps, speakSim, searchFrom, searchTo, eta, floodWarning, tollEstimate, fuelEstimate]);
+
   // Hentikan driving mode jika rute dibatalkan
   useEffect(() => { if (!routeSteps.length) stopDrivingMode(); }, [routeSteps]);
+
+  // Simpan trip ke riwayat saat mode berkendara selesai
+  useEffect(() => {
+    if (wasDrivingRef.current && !drivingMode && routeNames) {
+      const trip = {
+        id: Date.now(),
+        ts: new Date().toISOString(),
+        from: routeNames.from || 'Asal',
+        to:   routeNames.to   || 'Tujuan',
+        distanceKm: eta?.distance || null,
+        durationMin: eta?.time != null ? Math.round(eta.time) : null,
+      };
+      setTripHistory(prev => {
+        const updated = [trip, ...prev].slice(0, 30);
+        try { localStorage.setItem('jak_trip_history', JSON.stringify(updated)); } catch {}
+        return updated;
+      });
+    }
+    wasDrivingRef.current = drivingMode;
+  }, [drivingMode]); // eslint-disable-line
 
   const toggleNotif = useCallback(async () => {
     if (notifEnabled) { setNotifEnabled(false); return; }
@@ -871,8 +1051,42 @@ export default function App() {
         cctvRef.current = data;
       }
     });
+    socket.on('incident_alert', (data) => {
+      const incs = data.incidents || [];
+      setAiIncidents(incs);
+      const favs = (() => { try { return JSON.parse(localStorage.getItem('jak_fav_routes') || '[]'); } catch { return []; } })();
+      if (!favs.length) return;
+      incs.forEach(inc => {
+        const key = `${inc.cam_id}-${inc.type}`;
+        if (notifiedAIRef.current.has(key)) return;
+        const near = favs.some(r => {
+          if (!r.fromCoord || !r.toCoord) return false;
+          const midLat = (r.fromCoord.lat + r.toCoord.lat) / 2;
+          const midLng = (r.fromCoord.lng + r.toCoord.lng) / 2;
+          return haversineDistance(midLat, midLng, inc.lat, inc.lng) < 5000;
+        });
+        if (!near) return;
+        notifiedAIRef.current.add(key);
+        setAiIncidentNotif(`🚨 ${inc.label} di ${inc.cam_name} — rute favoritmu terdampak`);
+        setTimeout(() => setAiIncidentNotif(null), 12000);
+        if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          new Notification(`🚨 ${inc.label} — JakTraffic`, {
+            body: `${inc.cam_name} · ${inc.vehicle_count} kend${inc.speed_kmh != null ? ` · ${inc.speed_kmh} km/h` : ''}`,
+            icon: '/favicon.ico',
+          });
+        }
+      });
+    });
     return () => socket.disconnect();
   }, [notifEnabled]); // notifEnabled digunakan di checkCongestionAlerts
+
+  // Auto-fetch AI incidents setiap 60 detik (fallback jika socket miss)
+  useEffect(() => {
+    const load = () => axios.get(`${API}/api/incidents`).then(r => setAiIncidents(r.data.incidents || [])).catch(() => {});
+    load();
+    const t = setInterval(load, 60000);
+    return () => clearInterval(t);
+  }, []);
 
   // Persistensi pilihan kendaraan & BBM
   useEffect(() => { localStorage.setItem('jak_vehicle', vehicleType); }, [vehicleType]);
@@ -936,6 +1150,14 @@ export default function App() {
 
   /* ================= MAP CLICK (ROUTING) ================= */
   const handleMapPick = (latlng) => {
+    // Mode laporan: klik peta untuk tentukan lokasi kejadian
+    if (reportPickMode) {
+      setReportPin({ lat: latlng.lat, lng: latlng.lng });
+      setReportPickMode(false);
+      setShowReportModal(true);
+      return;
+    }
+
     setSelected(null);
 
     if (!startPoint) setStartPoint(latlng);
@@ -1321,6 +1543,83 @@ export default function App() {
       .catch(() => setTomtomFlow(null));
   }, [selected]);
 
+  /* ================= CROWD REPORTS ================= */
+  const fetchCrowdReports = useCallback(() => {
+    fetch(`${API}/api/reports`)
+      .then(r => r.json())
+      .then(d => setCrowdReports(d.reports || []))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetchCrowdReports();
+    const t = setInterval(fetchCrowdReports, 3 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [fetchCrowdReports]);
+
+  const submitReport = () => {
+    if (!reportPin) return;
+    setReportSending(true);
+    fetch(`${API}/api/reports`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: reportType, lat: reportPin.lat, lng: reportPin.lng, description: reportDesc }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.id) {
+          setReportSent(true);
+          fetchCrowdReports();
+          setTimeout(() => { setShowReportModal(false); setReportSent(false); setReportPin(null); setReportDesc(''); }, 2000);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setReportSending(false));
+  };
+
+  /* ================= RUTE FAVORIT ================= */
+  // Notifikasi rute favorit macet (cek saat data CCTV diperbarui)
+  useEffect(() => {
+    if (!favRoutes.length || !cctv.length) return;
+    const heavyCams = cctv.filter(c => (c.vehicles || 0) > 35);
+    if (!heavyCams.length) return;
+    for (const r of favRoutes) {
+      if (!r.fromCoord || !r.toCoord) continue;
+      const midLat = (r.fromCoord.lat + r.toCoord.lat) / 2;
+      const midLng = (r.fromCoord.lng + r.toCoord.lng) / 2;
+      const rangeKm = haversineDistance(r.fromCoord.lat, r.fromCoord.lng, r.toCoord.lat, r.toCoord.lng) / 2 + 3;
+      const affected = heavyCams.find(c => c.lat && c.lng && haversineDistance(midLat, midLng, c.lat, c.lng) < rangeKm * 1000);
+      if (affected) {
+        setFavNotif(`⚠️ Rute favorit ${r.from} → ${r.to} mungkin macet (${affected.name}: ${affected.vehicles} kend)`);
+        setTimeout(() => setFavNotif(null), 8000);
+        break;
+      }
+    }
+  }, [cctv]);
+
+  const saveFavRoute = () => {
+    if (!startPoint || !endPoint || !routeNames) return;
+    const newFav = {
+      id:       Date.now(),
+      from:     routeNames.from,
+      to:       routeNames.to,
+      fromCoord: startPoint,
+      toCoord:   endPoint,
+      eta:      eta?.duration,
+      savedAt:  new Date().toLocaleDateString('id-ID'),
+    };
+    const updated = [newFav, ...favRoutes.filter(r => r.from !== newFav.from || r.to !== newFav.to)].slice(0, 5);
+    setFavRoutes(updated);
+    localStorage.setItem('jak_fav_routes', JSON.stringify(updated));
+    setShowFavModal(false);
+  };
+
+  const removeFavRoute = (id) => {
+    const updated = favRoutes.filter(r => r.id !== id);
+    setFavRoutes(updated);
+    localStorage.setItem('jak_fav_routes', JSON.stringify(updated));
+  };
+
   /* ================= COMPARE MODE DATA FETCH ================= */
   useEffect(() => {
     if (!compareMode?.ids?.length) {
@@ -1533,17 +1832,16 @@ export default function App() {
             ))}
           </div>
         )}
-        {/* Right controls */}
+        {/* Right controls — user only */}
         <div style={{ display:'flex', alignItems:'center', gap:7, marginLeft:'auto', flexShrink:0 }}>
-          {predictionMode !== 'now' && (
-            <span style={{ background:'rgba(59,130,246,.15)', border:'1px solid rgba(59,130,246,.3)', borderRadius:5, padding:'2px 7px', fontSize:9, color:'#60a5fa', fontWeight:700, letterSpacing:.6 }}>
-              PREDIKSI {predictionMode}m
-            </span>
-          )}
+          {/* Indikator koneksi real-time */}
           <span
-            title={wsConnected ? 'Live WebSocket — data real-time' : 'WebSocket terputus — polling fallback aktif'}
-            style={{ width:7, height:7, borderRadius:'50%', flexShrink:0, background: wsConnected ? '#22c55e' : '#f59e0b', boxShadow: wsConnected ? '0 0 7px #22c55e' : 'none', cursor:'default' }}
-          />
+            title={wsConnected ? 'Data real-time terhubung' : 'Koneksi real-time terputus — data mungkin tidak terbaru'}
+            style={{ display:'flex', alignItems:'center', gap:4, cursor:'default', userSelect:'none' }}
+          >
+            <span style={{ width:6, height:6, borderRadius:'50%', background: wsConnected ? '#22c55e' : '#ef4444', boxShadow: wsConnected ? '0 0 5px #22c55e' : '0 0 5px #ef4444', animation: wsConnected ? 'none' : 'pulse 1.2s infinite' }} />
+            {!wsConnected && <span style={{ fontSize:9, color:'#ef4444', fontWeight:700 }}>OFFLINE</span>}
+          </span>
           {weatherData && (
             <span
               title={`Jakarta: ${weatherData.description} | ${weatherData.temp_c}°C | Hujan: ${weatherData.rain_mm}mm/h`}
@@ -1574,7 +1872,6 @@ export default function App() {
             {voiceEnabled ? '🔊' : '🔇'}
           </button>
           <button onClick={() => setShowChat(v => !v)} style={S.btn(showChat)}>🤖 AI Chat</button>
-          <a href="/admin" style={{ fontSize:10, color:'#64748b', textDecoration:'none', padding:'5px 10px', background:'rgba(255,255,255,.04)', borderRadius:7, border:'1px solid rgba(255,255,255,.07)', fontWeight:600 }}>⚙ Operator</a>
         </div>
       </nav>
 
@@ -1635,7 +1932,7 @@ export default function App() {
           <Marker key={`eta-${wp.cctv_id}`} position={[wp.lat, wp.lng]} icon={etaBadgeIcon(wp.segment_min, wp.segment_km, wp.isDestination)} interactive={false} />
         ))}
 
-        {!drivingMode && tomtomIncidents.filter(inc => inc.lat != null && inc.lng != null).map((inc, i) => (
+        {!drivingMode && showIncidents && tomtomIncidents.filter(inc => inc.lat != null && inc.lng != null).map((inc, i) => (
           <Marker key={`inc-${i}`} position={[inc.lat, inc.lng]} icon={incidentIcon(inc.category)} zIndexOffset={500}>
             <Popup>
               <div style={{ color:'#0f172a', fontSize:12, maxWidth:200, lineHeight:1.4 }}>
@@ -1647,9 +1944,25 @@ export default function App() {
           </Marker>
         ))}
 
+        {/* ── Insiden AI (GPU Scanner) ─────────────────── */}
+        {aiIncidents.filter(inc => inc.lat && inc.lng).map(inc => (
+          <Marker key={`ai-inc-${inc.cam_id}`} position={[inc.lat, inc.lng]} icon={aiIncidentIcon(inc.severity)} zIndexOffset={650}>
+            <Popup>
+              <div style={{ color:'#0f172a', fontSize:12, maxWidth:210, lineHeight:1.5 }}>
+                <b style={{ color: inc.severity === 'critical' ? '#dc2626' : '#ea580c' }}>🚨 {inc.label}</b>
+                <p style={{ margin:'4px 0 0' }}>{inc.cam_name}</p>
+                <p style={{ margin:'2px 0 0', color:'#64748b', fontSize:10 }}>
+                  {inc.vehicle_count} kendaraan{inc.speed_kmh != null ? ` · ${inc.speed_kmh} km/h` : ''}
+                </p>
+                <p style={{ margin:'4px 0 0', fontSize:9, color:'#94a3b8' }}>Terdeteksi sistem otomatis JakTraffic</p>
+              </div>
+            </Popup>
+          </Marker>
+        ))}
+
         {!drivingMode && filteredCctv.map(c => {
           const ev = getEffectiveVehicles(c);
-          const color = ev > 30 ? '#ef4444' : ev > 15 ? '#f97316' : '#22c55e';
+          const color = ev > 40 ? '#ef4444' : ev > 20 ? '#f97316' : '#22c55e';
           return <Circle key={`zone-${c.id}`} center={[c.lat, c.lng]} radius={c.road_type==='toll'?200:400} pathOptions={{ color, fillColor:color, fillOpacity:.07, weight:1, opacity:.2 }} />;
         })}
 
@@ -1682,6 +1995,49 @@ export default function App() {
             </Marker>
           );
         })}
+        {/* ── Crowd Report Markers ── */}
+        {showReports && crowdReports.filter(r => r.status !== 'dismissed').map(r => {
+          const REPORT_ICON_MAP = { macet:'🚗', banjir:'🌊', kecelakaan:'🚨', tutup:'🚧', galian:'⛏️', longsor:'⛰️' };
+          const REPORT_COLOR    = { macet:'#f59e0b', banjir:'#38bdf8', kecelakaan:'#f43f5e', tutup:'#fb923c', galian:'#a78bfa', longsor:'#d97706' };
+          const emoji = REPORT_ICON_MAP[r.report_type] || '📍';
+          const col   = REPORT_COLOR[r.report_type]    || '#94a3b8';
+          const ico   = L.divIcon({
+            className: '',
+            html: `<div style="width:32px;height:32px;border-radius:50% 50% 50% 0;background:${col};transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;border:2px solid rgba(255,255,255,.7);box-shadow:0 2px 8px rgba(0,0,0,.4)"><span style="transform:rotate(45deg);font-size:14px">${emoji}</span></div>`,
+            iconSize: [32, 32], iconAnchor: [16, 32],
+          });
+          return (
+            <Marker key={`rpt-${r.id}`} position={[r.lat, r.lng]} icon={ico} zIndexOffset={800}>
+              <Popup>
+                <div style={{ color:'#0f172a', fontSize:12, maxWidth:200, lineHeight:1.5 }}>
+                  <b>{emoji} {r.report_type.charAt(0).toUpperCase()+r.report_type.slice(1)}</b>
+                  {r.description && <p style={{ margin:'3px 0 0', color:'#374151' }}>{r.description}</p>}
+                  <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:10 }}>
+                    {r.status === 'verified' ? '✓ Terverifikasi' : '⏳ Belum diverifikasi'} · {(() => {
+                      const d = Math.floor((Date.now()-new Date(r.created_at))/60000);
+                      return d < 60 ? `${d} menit lalu` : `${Math.floor(d/60)} jam lalu`;
+                    })()}
+                  </p>
+                </div>
+              </Popup>
+            </Marker>
+          );
+        })}
+
+        {/* Report Pin (titik yang sedang dipilih user) */}
+        {reportPin && (() => {
+          const pinIco = L.divIcon({ className:'', html:'<div style="width:22px;height:22px;border-radius:50%;background:#f43f5e;border:3px solid #fff;box-shadow:0 0 12px rgba(244,63,94,.7)"></div>', iconSize:[22,22], iconAnchor:[11,11] });
+          return <Marker position={[reportPin.lat, reportPin.lng]} icon={pinIco} interactive={false} />;
+        })()}
+
+        {/* Heatmap kepadatan real-time */}
+        <HeatmapLayer
+          visible={showHeatmap}
+          points={filteredCctv.filter(c => c.lat && c.lng).map(c => {
+            const v = getEffectiveVehicles(c);
+            return [c.lat, c.lng, Math.min(1, v / 60)];
+          })}
+        />
       </MapContainer>
 
       {/* Flood legend */}
@@ -1812,7 +2168,7 @@ export default function App() {
 
           {/* ——— MODE WAKTU ——— */}
           <div style={S.card}>
-            <div style={S.label}>Mode Tampilan</div>
+            <div style={S.label}>Prediksi Kondisi</div>
             <div style={{ display:'flex', gap:5 }}>
               {[{l:'Sekarang', v:'now'},{l:'15 Mnt', v:'15'},{l:'30 Mnt', v:'30'}].map(o => (
                 <button key={o.v} onClick={() => setPredictionMode(o.v)} style={S.btnSm(predictionMode===o.v)}>{o.l}</button>
@@ -2311,11 +2667,278 @@ export default function App() {
         {showPanel ? '✕ Tutup Panel' : '📊 Lihat Info'}
       </button>
 
+      {/* ── Tombol Laporkan (floating bottom-right atas legend) ── */}
+      {!drivingMode && (
+        <div style={{ position:'absolute', bottom:120, right:12, zIndex:1000, display:'flex', flexDirection:'column', gap:8 }}>
+          {/* Tombol laporan crowd */}
+          <button
+            onClick={() => { setReportPickMode(true); setShowReportModal(false); }}
+            title="Laporkan kondisi jalan"
+            style={{ width:46, height:46, borderRadius:12, background: reportPickMode?'rgba(244,63,94,.9)':'rgba(6,17,40,.95)', border:`2px solid ${reportPickMode?'#f43f5e':'rgba(244,63,94,.4)'}`, color: reportPickMode?'#fff':'#f87171', fontSize:20, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', boxShadow:'0 4px 16px rgba(0,0,0,.5)', transition:'all .2s' }}>
+            📣
+          </button>
+          {/* Toggle tampilkan laporan */}
+          <button
+            onClick={() => setShowReports(v => !v)}
+            title="Tampilkan/sembunyikan laporan"
+            style={{ width:46, height:46, borderRadius:12, background: showReports?'rgba(56,189,248,.15)':'rgba(6,17,40,.95)', border:`2px solid ${showReports?'rgba(56,189,248,.4)':'rgba(255,255,255,.08)'}`, color: showReports?'#38bdf8':'#475569', fontSize:18, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', boxShadow:'0 4px 16px rgba(0,0,0,.4)', transition:'all .2s' }}>
+            {showReports ? '📋' : '🙈'}
+          </button>
+          {/* Rute favorit */}
+          {routeNames && (
+            <button
+              onClick={() => setShowFavModal(v => !v)}
+              title="Simpan / lihat rute favorit"
+              style={{ width:46, height:46, borderRadius:12, background:'rgba(245,158,11,.12)', border:'2px solid rgba(245,158,11,.35)', color:'#fbbf24', fontSize:20, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', boxShadow:'0 4px 16px rgba(0,0,0,.4)' }}>
+              ⭐
+            </button>
+          )}
+          {/* Heatmap kepadatan */}
+          <button
+            onClick={() => setShowHeatmap(v => !v)}
+            title="Heatmap kepadatan real-time"
+            style={{ width:46, height:46, borderRadius:12, background: showHeatmap?'rgba(239,68,68,.18)':'rgba(6,17,40,.95)', border:`2px solid ${showHeatmap?'rgba(239,68,68,.55)':'rgba(255,255,255,.08)'}`, color: showHeatmap?'#f87171':'#475569', fontSize:20, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', boxShadow:'0 4px 16px rgba(0,0,0,.4)', transition:'all .2s' }}>
+            🌡️
+          </button>
+          {/* Toggle insiden TomTom */}
+          <button
+            onClick={() => setShowIncidents(v => !v)}
+            title={showIncidents ? 'Sembunyikan insiden TomTom' : 'Tampilkan insiden TomTom'}
+            style={{ width:46, height:46, borderRadius:12, background: showIncidents?'rgba(249,115,22,.18)':'rgba(6,17,40,.95)', border:`2px solid ${showIncidents?'rgba(249,115,22,.55)':'rgba(255,255,255,.08)'}`, color: showIncidents?'#fb923c':'#475569', fontSize:20, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', boxShadow:'0 4px 16px rgba(0,0,0,.4)', transition:'all .2s', position:'relative' }}>
+            🚧
+            {!showIncidents && <span style={{ position:'absolute', top:2, right:2, width:10, height:10, borderRadius:'50%', background:'#475569', border:'2px solid rgba(6,17,40,.95)', display:'block' }} />}
+          </button>
+          {/* Statistik perjalanan */}
+          <button
+            onClick={() => setShowStatsModal(v => !v)}
+            title="Statistik perjalanan saya"
+            style={{ width:46, height:46, borderRadius:12, background: showStatsModal?'rgba(99,102,241,.18)':'rgba(6,17,40,.95)', border:`2px solid ${showStatsModal?'rgba(99,102,241,.5)':'rgba(255,255,255,.08)'}`, color: showStatsModal?'#a5b4fc':'#475569', fontSize:20, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', boxShadow:'0 4px 16px rgba(0,0,0,.4)', transition:'all .2s' }}>
+            📊
+          </button>
+        </div>
+      )}
+
+      {/* ── Notifikasi Insiden AI ── */}
+      {aiIncidentNotif && (
+        <div style={{ position:'absolute', top:60, left:'50%', transform:'translateX(-50%)', zIndex:1900, background:'rgba(239,68,68,.95)', backdropFilter:'blur(12px)', borderRadius:12, padding:'10px 18px', fontSize:11, color:'#fff', fontWeight:700, boxShadow:'0 4px 24px rgba(239,68,68,.5)', maxWidth:380, width:'92%', textAlign:'center', display:'flex', alignItems:'center', gap:8 }}>
+          <span style={{ flex:1 }}>{aiIncidentNotif}</span>
+          <button onClick={() => setAiIncidentNotif(null)} style={{ background:'rgba(255,255,255,.2)', border:'none', borderRadius:5, padding:'2px 7px', color:'#fff', cursor:'pointer', fontSize:10, fontWeight:700 }}>✕</button>
+        </div>
+      )}
+
+      {/* ── Notifikasi Rute Favorit Macet ── */}
+      {favNotif && (
+        <div style={{ position:'absolute', top: aiIncidentNotif ? 108 : 60, left:'50%', transform:'translateX(-50%)', zIndex:1800, background:'rgba(245,158,11,.95)', backdropFilter:'blur(12px)', borderRadius:12, padding:'10px 18px', fontSize:11, color:'#020811', fontWeight:700, boxShadow:'0 4px 20px rgba(245,158,11,.4)', maxWidth:360, width:'90%', textAlign:'center' }}>
+          {favNotif}
+          <button onClick={() => setFavNotif(null)} style={{ marginLeft:10, background:'rgba(0,0,0,.15)', border:'none', borderRadius:5, padding:'2px 7px', color:'#020811', cursor:'pointer', fontSize:10, fontWeight:700 }}>✕</button>
+        </div>
+      )}
+
+      {/* ── Modal Statistik Perjalanan ── */}
+      {showStatsModal && (
+        <div style={{ position:'absolute', bottom:80, right:70, zIndex:2100, width:320, background:'rgba(6,11,28,.97)', border:'1px solid rgba(99,102,241,.3)', borderRadius:16, overflow:'hidden', boxShadow:'0 8px 40px rgba(0,0,0,.7)' }}>
+          {/* Header */}
+          <div style={{ padding:'12px 16px', borderBottom:'1px solid rgba(255,255,255,.07)', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+            <div>
+              <div style={{ fontSize:12, fontWeight:700, color:'#a5b4fc' }}>📊 Statistik Perjalanan</div>
+              <div style={{ fontSize:9, color:'#475569', marginTop:1 }}>{tripHistory.length} perjalanan tercatat</div>
+            </div>
+            <div style={{ display:'flex', gap:6 }}>
+              {tripHistory.length > 0 && (
+                <button onClick={() => {
+                  if (window.confirm('Hapus semua riwayat perjalanan?')) {
+                    setTripHistory([]);
+                    try { localStorage.removeItem('jak_trip_history'); } catch {}
+                  }
+                }} style={{ fontSize:9, color:'#ef4444', background:'rgba(239,68,68,.1)', border:'1px solid rgba(239,68,68,.25)', borderRadius:5, padding:'3px 7px', cursor:'pointer' }}>Hapus</button>
+              )}
+              <button onClick={() => setShowStatsModal(false)} style={{ fontSize:16, color:'#475569', background:'none', border:'none', cursor:'pointer', lineHeight:1 }}>✕</button>
+            </div>
+          </div>
+
+          {/* Summary tiles */}
+          {tripHistory.length > 0 && (() => {
+            const totalKm = tripHistory.reduce((s, t) => s + (parseFloat(t.distanceKm) || 0), 0);
+            const totalMin = tripHistory.reduce((s, t) => s + (t.durationMin || 0), 0);
+            const avgKm  = totalKm / tripHistory.length;
+            return (
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:1, background:'rgba(255,255,255,.04)', borderBottom:'1px solid rgba(255,255,255,.07)' }}>
+                {[
+                  { label:'Total Trip', val: tripHistory.length, unit:'' },
+                  { label:'Total Jarak', val: totalKm.toFixed(1), unit:' km' },
+                  { label:'Rata-rata', val: avgKm.toFixed(1), unit:' km' },
+                ].map(({ label, val, unit }) => (
+                  <div key={label} style={{ padding:'10px 8px', textAlign:'center', background:'rgba(6,11,28,.6)' }}>
+                    <div style={{ fontSize:15, fontWeight:800, color:'#e2e8f0', fontVariantNumeric:'tabular-nums' }}>{val}{unit}</div>
+                    <div style={{ fontSize:8, color:'#475569', marginTop:2 }}>{label}</div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+
+          {/* Trip list */}
+          <div style={{ maxHeight:260, overflowY:'auto', padding:'6px 0' }}>
+            {tripHistory.length === 0 ? (
+              <div style={{ padding:'24px 0', textAlign:'center', color:'#334155', fontSize:11 }}>
+                Belum ada perjalanan.<br />
+                <span style={{ fontSize:9, color:'#1e293b' }}>Gunakan mode berkendara untuk merekam rute.</span>
+              </div>
+            ) : tripHistory.map((t, i) => {
+              const d = new Date(t.ts);
+              const dateStr = d.toLocaleDateString('id-ID', { day:'2-digit', month:'short' });
+              const timeStr = d.toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit' });
+              return (
+                <div key={t.id} style={{ padding:'8px 14px', borderBottom: i < tripHistory.length-1 ? '1px solid rgba(255,255,255,.04)' : 'none', display:'flex', alignItems:'flex-start', gap:10 }}>
+                  <div style={{ width:28, height:28, borderRadius:8, background:'rgba(99,102,241,.15)', border:'1px solid rgba(99,102,241,.25)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:12 }}>🗺️</div>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:11, color:'#e2e8f0', fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                      {t.from} → {t.to}
+                    </div>
+                    <div style={{ display:'flex', gap:8, marginTop:3 }}>
+                      {t.distanceKm && <span style={{ fontSize:9, color:'#22c55e', fontWeight:700 }}>{t.distanceKm} km</span>}
+                      {t.durationMin && <span style={{ fontSize:9, color:'#38bdf8' }}>{t.durationMin} mnt</span>}
+                      <span style={{ fontSize:9, color:'#334155', marginLeft:'auto' }}>{dateStr} {timeStr}</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Banner mode pick laporan ── */}
+      {reportPickMode && (
+        <div style={{ position:'absolute', top:72, left:'50%', transform:'translateX(-50%)', zIndex:2000, background:'rgba(244,63,94,.95)', backdropFilter:'blur(12px)', borderRadius:12, padding:'10px 20px', fontSize:12, color:'#fff', fontWeight:700, boxShadow:'0 4px 20px rgba(244,63,94,.5)', pointerEvents:'none', whiteSpace:'nowrap' }}>
+          📣 Klik lokasi kejadian di peta
+          <button onPointerDown={e => { e.stopPropagation(); setReportPickMode(false); }}
+            style={{ marginLeft:12, background:'rgba(255,255,255,.2)', border:'none', borderRadius:6, padding:'3px 8px', color:'#fff', cursor:'pointer', fontSize:11, fontWeight:700, pointerEvents:'all' }}>✕</button>
+        </div>
+      )}
+
+      {/* ── Modal Laporan ── */}
+      {showReportModal && (
+        <div style={{ position:'fixed', inset:0, zIndex:9990, background:'rgba(0,0,0,.7)', backdropFilter:'blur(6px)', display:'flex', alignItems:'flex-end', justifyContent:'center', padding:'0 0 24px' }}>
+          <div style={{ background:'rgba(6,17,40,.98)', border:'1px solid rgba(244,63,94,.25)', borderRadius:16, padding:20, width:'100%', maxWidth:440, boxShadow:'0 -20px 60px rgba(0,0,0,.6)' }}>
+            {reportSent ? (
+              <div style={{ textAlign:'center', padding:'20px 0' }}>
+                <div style={{ fontSize:40, marginBottom:8 }}>✅</div>
+                <div style={{ fontSize:15, fontWeight:800, color:'#4ade80' }}>Laporan Terkirim!</div>
+                <div style={{ fontSize:12, color:'#64748b', marginTop:4 }}>Terima kasih telah membantu sesama pengguna jalan</div>
+              </div>
+            ) : (
+              <>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:16 }}>
+                  <div style={{ fontSize:14, fontWeight:800, color:'#f87171' }}>📣 Laporkan Kondisi Jalan</div>
+                  <button onClick={() => { setShowReportModal(false); setReportPin(null); }} style={{ background:'rgba(255,255,255,.07)', border:'1px solid rgba(255,255,255,.1)', borderRadius:7, padding:'4px 9px', color:'#64748b', cursor:'pointer', fontSize:12 }}>✕</button>
+                </div>
+
+                {/* Lokasi terpilih */}
+                {reportPin && (
+                  <div style={{ background:'rgba(244,63,94,.08)', border:'1px solid rgba(244,63,94,.2)', borderRadius:8, padding:'8px 12px', marginBottom:12, fontSize:11, color:'#f87171' }}>
+                    📍 {reportPin.lat.toFixed(5)}, {reportPin.lng.toFixed(5)}
+                    <button onClick={() => { setReportPickMode(true); setShowReportModal(false); }}
+                      style={{ marginLeft:10, fontSize:10, color:'#94a3b8', background:'rgba(255,255,255,.06)', border:'none', borderRadius:5, padding:'2px 7px', cursor:'pointer' }}>Ganti</button>
+                  </div>
+                )}
+
+                {/* Tipe laporan */}
+                <div style={{ fontSize:9, fontWeight:700, color:'#64748b', letterSpacing:.8, marginBottom:8 }}>JENIS KEJADIAN</div>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:6, marginBottom:14 }}>
+                  {[
+                    { id:'macet',       icon:'🚗', label:'Macet'        },
+                    { id:'banjir',      icon:'🌊', label:'Banjir'       },
+                    { id:'kecelakaan',  icon:'🚨', label:'Kecelakaan'   },
+                    { id:'tutup',       icon:'🚧', label:'Jalan Ditutup'},
+                    { id:'galian',      icon:'⛏️', label:'Galian'       },
+                    { id:'longsor',     icon:'⛰️', label:'Longsor'      },
+                  ].map(t => (
+                    <button key={t.id} onClick={() => setReportType(t.id)}
+                      style={{ background: reportType===t.id?'rgba(244,63,94,.15)':'rgba(255,255,255,.04)', border:`1px solid ${reportType===t.id?'rgba(244,63,94,.5)':'rgba(255,255,255,.08)'}`, borderRadius:9, padding:'10px 4px', cursor:'pointer', textAlign:'center', transition:'all .15s' }}>
+                      <div style={{ fontSize:18 }}>{t.icon}</div>
+                      <div style={{ fontSize:9, fontWeight:700, color: reportType===t.id?'#f87171':'#64748b', marginTop:3 }}>{t.label}</div>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Deskripsi opsional */}
+                <div style={{ fontSize:9, fontWeight:700, color:'#64748b', letterSpacing:.8, marginBottom:6 }}>DESKRIPSI (opsional)</div>
+                <textarea value={reportDesc} onChange={e => setReportDesc(e.target.value)} placeholder="Contoh: Macet panjang karena banjir, hindari Jl. Sudirman arah selatan..."
+                  rows={2} style={{ width:'100%', background:'rgba(255,255,255,.05)', border:'1px solid rgba(255,255,255,.1)', borderRadius:8, padding:'8px 10px', color:'#e2e8f0', fontSize:11, resize:'none', outline:'none', boxSizing:'border-box', marginBottom:14 }} />
+
+                <button onClick={submitReport} disabled={!reportPin || reportSending}
+                  style={{ width:'100%', background: reportPin?'linear-gradient(135deg,#f43f5e,#e11d48)':'rgba(255,255,255,.05)', border:'none', borderRadius:10, padding:'12px 0', color: reportPin?'#fff':'#475569', fontWeight:800, fontSize:13, cursor: reportPin?'pointer':'not-allowed', boxShadow: reportPin?'0 4px 20px rgba(244,63,94,.3)':'none' }}>
+                  {reportSending ? '⏳ Mengirim...' : reportPin ? '📣 Kirim Laporan' : '⬆ Pilih lokasi di peta terlebih dahulu'}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal Rute Favorit ── */}
+      {showFavModal && (
+        <div style={{ position:'fixed', inset:0, zIndex:9990, background:'rgba(0,0,0,.7)', backdropFilter:'blur(6px)', display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+          <div style={{ background:'rgba(6,17,40,.98)', border:'1px solid rgba(245,158,11,.25)', borderRadius:16, padding:20, width:'100%', maxWidth:400, boxShadow:'0 20px 60px rgba(0,0,0,.7)' }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:16 }}>
+              <div style={{ fontSize:14, fontWeight:800, color:'#fbbf24' }}>⭐ Rute Favorit</div>
+              <button onClick={() => setShowFavModal(false)} style={{ background:'rgba(255,255,255,.07)', border:'1px solid rgba(255,255,255,.1)', borderRadius:7, padding:'4px 9px', color:'#64748b', cursor:'pointer', fontSize:12 }}>✕</button>
+            </div>
+
+            {/* Simpan rute aktif */}
+            {routeNames && (
+              <div style={{ background:'rgba(245,158,11,.06)', border:'1px solid rgba(245,158,11,.15)', borderRadius:10, padding:12, marginBottom:14 }}>
+                <div style={{ fontSize:10, color:'#94a3b8', marginBottom:6 }}>Rute aktif saat ini:</div>
+                <div style={{ fontSize:12, fontWeight:700, color:'#fbbf24', marginBottom:10 }}>
+                  {routeNames.from} <span style={{ color:'#f59e0b' }}>→</span> {routeNames.to}
+                </div>
+                <button onClick={saveFavRoute} style={{ width:'100%', background:'rgba(245,158,11,.2)', border:'1px solid rgba(245,158,11,.4)', borderRadius:8, padding:'8px 0', color:'#fbbf24', fontWeight:700, fontSize:12, cursor:'pointer' }}>
+                  ⭐ Simpan ke Favorit
+                </button>
+              </div>
+            )}
+
+            {/* Daftar favorit */}
+            {favRoutes.length === 0 ? (
+              <div style={{ textAlign:'center', padding:'16px 0', color:'#475569', fontSize:12 }}>Belum ada rute favorit</div>
+            ) : (
+              <div style={{ display:'flex', flexDirection:'column', gap:8, maxHeight:300, overflowY:'auto' }}>
+                {favRoutes.map(r => (
+                  <div key={r.id} style={{ background:'rgba(255,255,255,.03)', border:'1px solid rgba(255,255,255,.07)', borderRadius:9, padding:'10px 12px', display:'flex', alignItems:'center', gap:10 }}>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:11, fontWeight:700, color:'#e2e8f0', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                        {r.from} <span style={{ color:'#f59e0b' }}>→</span> {r.to}
+                      </div>
+                      <div style={{ fontSize:9, color:'#475569', marginTop:2 }}>{r.savedAt} {r.eta && `· ${r.eta}`}</div>
+                    </div>
+                    <div style={{ display:'flex', gap:5, flexShrink:0 }}>
+                      <button onClick={() => {
+                        if (r.fromCoord && r.toCoord) { setStartPoint(r.fromCoord); setEndPoint(r.toCoord); setSearchFrom(r.from); setSearchTo(r.to); setShowFavModal(false); }
+                      }} style={{ background:'rgba(56,189,248,.1)', border:'1px solid rgba(56,189,248,.25)', borderRadius:6, padding:'4px 8px', color:'#38bdf8', fontSize:10, fontWeight:700, cursor:'pointer' }}>
+                        Gunakan
+                      </button>
+                      <button onClick={() => removeFavRoute(r.id)} style={{ background:'rgba(244,63,94,.08)', border:'1px solid rgba(244,63,94,.15)', borderRadius:6, padding:'4px 7px', color:'#f43f5e', fontSize:10, cursor:'pointer' }}>
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Map legend (bottom right) */}
       <div style={{ position:'absolute', bottom:24, right:12, zIndex:1000, background:'rgba(6,17,40,0.9)', border:'1px solid rgba(56,189,248,.1)', borderRadius:10, padding:'8px 12px', fontSize:9, color:'#64748b', lineHeight:1.9 }}>
         <div style={{ display:'flex', alignItems:'center', gap:6 }}><span style={{ width:8, height:8, borderRadius:'50%', background:'#22c55e', display:'inline-block' }} />Kamera Kota</div>
         <div style={{ display:'flex', alignItems:'center', gap:6 }}><span style={{ width:8, height:8, borderRadius:2, background:'#f59e0b', display:'inline-block' }} />Kamera Tol</div>
-        {tomtomIncidents.length > 0 && <div style={{ display:'flex', alignItems:'center', gap:6 }}><span style={{ fontSize:10 }}>⚠️</span>Insiden TomTom</div>}
+        {showIncidents && tomtomIncidents.length > 0 && <div style={{ display:'flex', alignItems:'center', gap:6 }}><span style={{ fontSize:10 }}>⚠️</span>Insiden TomTom</div>}
+        {/* Akses operator — tersembunyi di legend, tidak terlihat sebagai fitur utama */}
+        <div style={{ marginTop:4, paddingTop:4, borderTop:'1px solid rgba(255,255,255,.05)' }}>
+          <a href="/admin-login" style={{ color:'rgba(100,116,139,.4)', textDecoration:'none', fontSize:8 }}>⚙</a>
+        </div>
       </div>
 
       <style>{`
@@ -2416,10 +3039,40 @@ export default function App() {
               </div>
             </div>
 
-            {/* Manual step navigation */}
+            {/* Simulasi + Manual step navigation */}
+            <div style={{ display:'flex', gap:8, marginBottom:6 }}>
+              <button
+                onClick={() => simulating ? stopSimulation() : startSimulation()}
+                style={{
+                  flex:1, padding:'9px 0', borderRadius:8, fontSize:12, fontWeight:700, cursor:'pointer',
+                  background: simulating ? 'rgba(251,146,60,.14)' : 'rgba(34,197,94,.12)',
+                  border: `1px solid ${simulating ? 'rgba(251,146,60,.4)' : 'rgba(34,197,94,.3)'}`,
+                  color: simulating ? '#fb923c' : '#4ade80',
+                }}
+              >
+                {simulating ? '⏹ Stop Simulasi' : '▶ Simulasi Rute'}
+              </button>
+            </div>
             <div style={{ display:'flex', gap:8 }}>
               <button
-                onClick={() => { const i = Math.max(0, currentStepIdx-1); setCurrentStepIdx(i); currentStepRef.current = i; }}
+                onClick={() => {
+                  const i = Math.max(0, currentStepIdx - 1);
+                  setCurrentStepIdx(i); currentStepRef.current = i;
+                  const s = routeSteps[i];
+                  if (s?.lat && s?.lng) {
+                    // Hentikan simulasi, pindahkan marker ke posisi langkah
+                    stopSimulation();
+                    const coords = routeCoordsRef.current;
+                    // Cari indeks polyline terdekat ke titik maneuver ini
+                    let closest = 0, minD = Infinity;
+                    coords.forEach(([la, ln], ci) => {
+                      const d = haversineDistance(la, ln, s.lat, s.lng);
+                      if (d < minD) { minD = d; closest = ci; }
+                    });
+                    simCoordsRef.current = { segIdx: closest, lat: s.lat, lng: s.lng };
+                    setUserGPS({ lat: s.lat, lng: s.lng });
+                  }
+                }}
                 disabled={currentStepIdx === 0}
                 style={{ flex:1, padding:'9px 0', background:'rgba(255,255,255,.05)', border:'1px solid rgba(255,255,255,.09)', borderRadius:8, color: currentStepIdx === 0 ? '#334155' : '#94a3b8', fontSize:12, cursor: currentStepIdx === 0 ? 'default' : 'pointer' }}
               >
@@ -2427,10 +3080,22 @@ export default function App() {
               </button>
               <button
                 onClick={() => {
-                  const i = Math.min(routeSteps.length-1, currentStepIdx+1);
+                  const i = Math.min(routeSteps.length - 1, currentStepIdx + 1);
                   setCurrentStepIdx(i); currentStepRef.current = i;
                   const ns = routeSteps[i];
-                  if (ns) speak(`${maneuverLabel(ns.type, ns.modifier)}${ns.name ? ' di ' + ns.name : ''}.`);
+                  if (ns?.lat && ns?.lng) {
+                    // Hentikan simulasi, pindahkan marker ke posisi langkah berikut
+                    stopSimulation();
+                    const coords = routeCoordsRef.current;
+                    let closest = 0, minD = Infinity;
+                    coords.forEach(([la, ln], ci) => {
+                      const d = haversineDistance(la, ln, ns.lat, ns.lng);
+                      if (d < minD) { minD = d; closest = ci; }
+                    });
+                    simCoordsRef.current = { segIdx: closest, lat: ns.lat, lng: ns.lng };
+                    setUserGPS({ lat: ns.lat, lng: ns.lng });
+                  }
+                  if (ns) speakSim(`${maneuverLabel(ns.type, ns.modifier)}${ns.name ? ' di ' + ns.name : ''}.`);
                 }}
                 disabled={currentStepIdx >= routeSteps.length - 1}
                 style={{ flex:2, padding:'9px 0', background: currentStepIdx >= routeSteps.length-1 ? 'rgba(255,255,255,.03)' : 'rgba(56,189,248,.14)', border:`1px solid ${currentStepIdx >= routeSteps.length-1 ? 'rgba(255,255,255,.06)' : 'rgba(56,189,248,.3)'}`, borderRadius:8, color: currentStepIdx >= routeSteps.length-1 ? '#334155' : '#38bdf8', fontSize:12, fontWeight:700, cursor: currentStepIdx >= routeSteps.length-1 ? 'default' : 'pointer' }}
@@ -2586,15 +3251,33 @@ export default function App() {
       visible={showChat}
       onClose={() => setShowChat(false)}
       onMapCommands={executeMapCommands}
-      userContext={{
-        vehicle:      VEHICLE_TYPES.find(v => v.id === vehicleType)?.label ?? 'Mobil',
-        fuel:         FUEL_TYPES.find(f => f.id === fuelType)?.label ?? 'Pertalite',
-        ...(eta ? { route: { from: routeNames?.from, to: routeNames?.to, distance: eta.distance, time: eta.time } } : {}),
-        ...(tollEstimate ? { toll: { total: tollEstimate.total, corridors: tollEstimate.corridors.map(c => c.name) } } : {}),
-        ...(fuelEstimate ? { fuel_cost: { liters: fuelEstimate.liters, cost: fuelEstimate.cost } } : {}),
-        ...(floodWarning.length ? { flood_warning: floodWarning.map(z => ({ name: z.name, risk: z.risk })) } : {}),
-        ...(routeCameras.length ? { route_cameras: routeCameras.slice(0,5).map(c => c.name) } : {}),
-      }}
+      userContext={(() => {
+        const sorted = [...cctv].sort((a,b) => (b.vehicles||0) - (a.vehicles||0));
+        const camStatus = c => (c.vehicles||0) > 40 ? 'PADAT' : (c.vehicles||0) > 20 ? 'RAMAI' : 'LANCAR';
+        const live_traffic = {
+          padat: sorted.filter(c => (c.vehicles||0) > 40).slice(0,5).map(c => ({ name: c.name, vehicles: c.vehicles||0 })),
+          ramai: sorted.filter(c => (c.vehicles||0) > 20 && (c.vehicles||0) <= 40).slice(0,3).map(c => ({ name: c.name, vehicles: c.vehicles||0 })),
+          lancar: [...sorted].reverse().slice(0,5).map(c => ({ name: c.name, vehicles: c.vehicles||0 })),
+          total_cameras: cctv.length,
+        };
+        const enrichedRouteCams = routeCameras.slice(0,8).map(c => ({
+          name: c.name,
+          vehicles: c.vehicles || 0,
+          status: camStatus(c),
+        }));
+        const congested_on_route = enrichedRouteCams.filter(c => c.status === 'PADAT');
+        return {
+          vehicle:      VEHICLE_TYPES.find(v => v.id === vehicleType)?.label ?? 'Mobil',
+          fuel:         FUEL_TYPES.find(f => f.id === fuelType)?.label ?? 'Pertalite',
+          live_traffic,
+          ...(eta ? { route: { from: routeNames?.from, to: routeNames?.to, distance: eta.distance, time: eta.time } } : {}),
+          ...(tollEstimate ? { toll: { total: tollEstimate.total, corridors: tollEstimate.corridors.map(c => c.name) } } : {}),
+          ...(fuelEstimate ? { fuel_cost: { liters: fuelEstimate.liters, cost: fuelEstimate.cost } } : {}),
+          ...(floodWarning.length ? { flood_warning: floodWarning.map(z => ({ name: z.name, risk: z.risk })) } : {}),
+          ...(enrichedRouteCams.length ? { route_cameras: enrichedRouteCams } : {}),
+          ...(congested_on_route.length ? { congested_on_route } : {}),
+        };
+      })()}
     />
     <ChatButton onOpen={() => setShowChat(true)} />
     </>

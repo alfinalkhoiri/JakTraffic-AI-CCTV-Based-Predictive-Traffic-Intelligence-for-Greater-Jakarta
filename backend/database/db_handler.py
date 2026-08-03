@@ -7,6 +7,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Stream URL yang di-proxied melalui Nginx reverse proxy kita
+# Kamera yang bisa diakses dari server SG → route lewat proxy domain kita
+_STREAM_PROXY_MAP = {
+    "https://camera.jtd.co.id/": "/stream-proxy/jtd/",
+    "https://cctv.kkdm.co.id/":  "/stream-proxy/kkdm/",
+}
+
+def _proxy_stream_url(url: str | None) -> str | None:
+    """Ganti upstream stream URL dengan path proxy Nginx jika tersedia."""
+    if not url:
+        return url
+    for upstream, proxy_path in _STREAM_PROXY_MAP.items():
+        if url.startswith(upstream):
+            return proxy_path + url[len(upstream):]
+    return url
+
 # ===============================
 # CONFIG
 # ===============================
@@ -121,6 +137,10 @@ def get_all_cctv_status():
 
             # Jalan tol tidak memiliki lampu merah — rekomendasi sinyal tidak berlaku
             data["has_signal"] = data.get("road_type") != "toll"
+
+            # Transform stream URLs ke Nginx proxy path jika tersedia
+            data["stream_url"]  = _proxy_stream_url(data.get("stream_url"))
+            data["preview_url"] = _proxy_stream_url(data.get("preview_url"))
 
             results.append(data)
 
@@ -327,6 +347,158 @@ def delete_camera(cam_id):
         conn.rollback()
         raise
 
+    finally:
+        cur.close()
+        conn.close()
+
+
+def init_extensions():
+    """Buat tabel crowd_reports dan camera_config jika belum ada."""
+    conn = get_db_connection()
+    cur  = conn.cursor()
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS crowd_reports (
+                id           SERIAL PRIMARY KEY,
+                report_type  VARCHAR(30) NOT NULL,
+                lat          DOUBLE PRECISION NOT NULL,
+                lng          DOUBLE PRECISION NOT NULL,
+                description  TEXT,
+                status       VARCHAR(20) DEFAULT 'pending',
+                ip_hash      VARCHAR(64),
+                operator_note TEXT,
+                created_at   TIMESTAMP DEFAULT NOW(),
+                updated_at   TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS camera_config (
+                cam_id          INTEGER PRIMARY KEY,
+                maintenance     BOOLEAN DEFAULT FALSE,
+                maintenance_note TEXT,
+                pix_per_meter   FLOAT DEFAULT 8.0,
+                updated_at      TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        conn.commit()
+        logger.info("[DB] Tabel crowd_reports & camera_config siap")
+    except Exception as e:
+        logger.error(f"[DB] init_extensions error: {e}")
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def get_camera_configs():
+    """Ambil semua konfigurasi kamera (maintenance, pix_per_meter)."""
+    conn = get_db_connection()
+    cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        cur.execute("SELECT * FROM camera_config")
+        return {row["cam_id"]: dict(row) for row in cur.fetchall()}
+    except Exception as e:
+        logger.error(f"[DB] get_camera_configs error: {e}")
+        return {}
+    finally:
+        cur.close()
+        conn.close()
+
+
+def upsert_camera_config(cam_id: int, maintenance: bool = None, maintenance_note: str = None,
+                         pix_per_meter: float = None):
+    conn = get_db_connection()
+    cur  = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO camera_config (cam_id, maintenance, maintenance_note, pix_per_meter, updated_at)
+            VALUES (%s, %s, %s, %s, NOW())
+            ON CONFLICT (cam_id) DO UPDATE
+            SET maintenance      = COALESCE(%s, camera_config.maintenance),
+                maintenance_note = COALESCE(%s, camera_config.maintenance_note),
+                pix_per_meter    = COALESCE(%s, camera_config.pix_per_meter),
+                updated_at       = NOW()
+        """, (
+            cam_id,
+            maintenance if maintenance is not None else False,
+            maintenance_note, pix_per_meter,
+            maintenance, maintenance_note, pix_per_meter,
+        ))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"[DB] upsert_camera_config error: {e}")
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def add_crowd_report(report_type: str, lat: float, lng: float,
+                     description: str = "", ip_hash: str = ""):
+    conn = get_db_connection()
+    cur  = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO crowd_reports (report_type, lat, lng, description, ip_hash)
+            VALUES (%s, %s, %s, %s, %s) RETURNING id
+        """, (report_type, lat, lng, description[:500] if description else "", ip_hash))
+        report_id = cur.fetchone()[0]
+        conn.commit()
+        return report_id
+    except Exception as e:
+        logger.error(f"[DB] add_crowd_report error: {e}")
+        conn.rollback()
+        return None
+    finally:
+        cur.close()
+        conn.close()
+
+
+def get_crowd_reports(include_resolved: bool = False):
+    conn = get_db_connection()
+    cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        if include_resolved:
+            cur.execute("""
+                SELECT * FROM crowd_reports
+                ORDER BY created_at DESC LIMIT 200
+            """)
+        else:
+            cur.execute("""
+                SELECT * FROM crowd_reports
+                WHERE status IN ('pending','verified')
+                  AND created_at >= NOW() - INTERVAL '24 hours'
+                ORDER BY created_at DESC LIMIT 100
+            """)
+        rows = cur.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["created_at"] = d["created_at"].strftime("%Y-%m-%d %H:%M:%S") if d.get("created_at") else None
+            d["updated_at"] = d["updated_at"].strftime("%Y-%m-%d %H:%M:%S") if d.get("updated_at") else None
+            result.append(d)
+        return result
+    except Exception as e:
+        logger.error(f"[DB] get_crowd_reports error: {e}")
+        return []
+    finally:
+        cur.close()
+        conn.close()
+
+
+def update_crowd_report(report_id: int, status: str, operator_note: str = None):
+    conn = get_db_connection()
+    cur  = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE crowd_reports
+            SET status = %s, operator_note = COALESCE(%s, operator_note), updated_at = NOW()
+            WHERE id = %s
+        """, (status, operator_note, report_id))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"[DB] update_crowd_report error: {e}")
+        conn.rollback()
     finally:
         cur.close()
         conn.close()
