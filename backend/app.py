@@ -493,13 +493,14 @@ def _dataset_collection_job():
 def speed_estimation_job():
     """
     Estimasi kecepatan untuk 20 kamera tersibuk via optical flow (setiap 5 menit).
-    Lebih akurat dari ByteTrack untuk scan interval 60 detik karena
-    optical flow hanya butuh 2 frame berjarak ~1 detik dari kamera yang sama.
+    Hanya proses kamera dengan consecutive_errors < 3 agar tidak blocking pada
+    stream yang diketahui gagal. Setiap kamera dibatasi 12 detik via thread timeout.
     """
+    import concurrent.futures
+
     try:
         conn = db_handler.get_db_connection()
         cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        # Ambil 20 kamera dengan kendaraan terbanyak yang punya stream aktif
         cur.execute("""
             SELECT ct.id, ct.vehicles, cl.stream_url
             FROM current_traffic ct
@@ -515,32 +516,44 @@ def speed_estimation_job():
         logger.error("[SpeedJob] DB error: %s", e)
         return
 
-    if not cameras:
+    # Saring kamera yang streamnya diketahui sering gagal
+    healthy_cams = [
+        c for c in cameras
+        if _cam_health.get(c["id"], {}).get("consecutive_errors", 0) < 3
+    ]
+    if not healthy_cams:
+        logger.info("[SpeedJob] Tidak ada kamera healthy dengan vehicles≥2 (%d total tersedia)", len(cameras))
         return
 
-    vdet = detector.VideoDetector()
-    updated = 0
-    for cam in cameras:
-        try:
-            url   = _resolve_stream_url(cam["stream_url"])
-            speed = vdet.estimate_speed(url, cam["id"])
-            if speed is None:
-                continue
-            conn2 = db_handler.get_db_connection()
-            cur2  = conn2.cursor()
-            cur2.execute(
-                "UPDATE current_traffic SET speed_kmh=%s WHERE id=%s",
-                (speed, cam["id"])
-            )
-            conn2.commit(); conn2.close()
-            h = _cam_health.get(cam["id"], {})
-            h["speed_kmh"] = speed
-            _cam_health[cam["id"]] = h
-            updated += 1
-        except Exception as e:
-            logger.debug("[SpeedJob] cam %s: %s", cam["id"], e)
+    def _estimate(cam):
+        url = _resolve_stream_url(cam["stream_url"])
+        return cam["id"], detector.estimate_speed(url, cam["id"])
 
-    logger.info("[SpeedJob] Speed diperbarui untuk %d/%d kamera", updated, len(cameras))
+    updated = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        fmap = {pool.submit(_estimate, c): c for c in healthy_cams}
+        # wait() menunggu max 90 detik, lalu proses hanya futures yang selesai
+        done, _ = concurrent.futures.wait(fmap.keys(), timeout=90)
+        for fut in done:
+            cam = fmap[fut]
+            try:
+                cam_id, speed = fut.result()
+                if speed is None:
+                    continue
+                conn2 = db_handler.get_db_connection()
+                cur2  = conn2.cursor()
+                cur2.execute("UPDATE current_traffic SET speed_kmh=%s WHERE id=%s",
+                             (speed, cam_id))
+                conn2.commit(); conn2.close()
+                h = _cam_health.get(cam_id, {})
+                h["speed_kmh"] = speed
+                _cam_health[cam_id] = h
+                updated += 1
+            except Exception as e:
+                logger.debug("[SpeedJob] cam %s: %s", cam["id"], e)
+
+    logger.info("[SpeedJob] Speed diperbarui untuk %d/%d kamera healthy (selesai: %d/%d)",
+                updated, len(healthy_cams), len(done), len(fmap))
 
 
 scheduler = BackgroundScheduler()
