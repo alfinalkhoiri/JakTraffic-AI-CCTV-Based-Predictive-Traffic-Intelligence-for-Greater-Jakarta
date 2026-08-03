@@ -136,21 +136,25 @@ def _resolve_stream_url(url: str) -> str:
 def _process_single_camera(cctv, timestamp):
     """Proses satu kamera: baca stream, hitung kendaraan, simpan ke DB.
     Dipanggil dari thread pool — setiap thread membuka koneksi DB sendiri.
+    Kamera dengan consecutive_errors ≥ 5 langsung pakai simulasi (skip stream).
     """
     loc_id = cctv.get("id")
     name = cctv.get("name", f"Lokasi {loc_id}")
     stream_url = _resolve_stream_url(cctv.get("stream_url"))
     try:
         ts_dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S") if isinstance(timestamp, str) else timestamp
-        if not stream_url:
+        consec_err = _cam_health.get(loc_id, {}).get("consecutive_errors", 0)
+        if not stream_url or consec_err >= 5:
+            # Skip stream — langsung simulasi agar tidak blocking thread pool
             vehicle_count = _simulate_vehicle_count(loc_id, ts_dt)
         else:
             yolo_count = detector.get_vehicle_count(stream_url, loc_id)
             if yolo_count is None:
-                # Stream tidak terjangkau — fallback ke simulasi
                 logger.warning(f"[YOLO] Lokasi {loc_id} ({name}): stream gagal, pakai simulasi")
+                _cam_health_err(loc_id)
                 vehicle_count = _simulate_vehicle_count(loc_id, ts_dt)
             else:
+                _cam_health_ok(loc_id)
                 vehicle_count = yolo_count
         # Hitung status dan risk_score berdasarkan jumlah kendaraan
         weather_text = cctv.get("weather") or "Cerah"
@@ -186,7 +190,7 @@ def mining_job():
     cctv_list = db_handler.get_all_cctv_status()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {
             executor.submit(_process_single_camera, cctv, timestamp): cctv
             for cctv in cctv_list
