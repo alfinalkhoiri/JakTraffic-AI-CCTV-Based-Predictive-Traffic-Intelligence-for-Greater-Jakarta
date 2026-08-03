@@ -149,6 +149,48 @@ def _speed_from_tracks(cam_id: int) -> Optional[float]:
             speeds.append(kmh)
     return round(sum(speeds)/len(speeds), 1) if speeds else None
 
+# ── Optical flow speed (untuk /speed-batch) ────────────────────────────────────
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS",
+    "timeout;5000000|protocol_whitelist;file,crypto,data,http,https,tcp,tls,udp")
+
+def _optical_flow_speed(stream_url: str, pix_per_m: float = 8.0,
+                        frame_gap_s: float = 1.0) -> Optional[float]:
+    """
+    Grab 2 frame dari stream berjarak frame_gap_s detik, hitung kecepatan
+    via Farneback optical flow. Return km/h atau None jika stream gagal.
+    """
+    cap = cv2.VideoCapture(stream_url)
+    gray_frames, frame_times = [], []
+    start = time.time()
+    while time.time() - start < 7 and len(gray_frames) < 2:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if not gray_frames:
+            gray_frames.append(cv2.cvtColor(cv2.resize(frame, (640, 360)), cv2.COLOR_BGR2GRAY))
+            frame_times.append(time.time())
+        elif time.time() - frame_times[0] >= frame_gap_s:
+            gray_frames.append(cv2.cvtColor(cv2.resize(frame, (640, 360)), cv2.COLOR_BGR2GRAY))
+            frame_times.append(time.time())
+    cap.release()
+
+    if len(gray_frames) < 2:
+        return None
+
+    dt   = max(frame_times[1] - frame_times[0], 0.05)
+    flow = cv2.calcOpticalFlowFarneback(
+        gray_frames[0], gray_frames[1], None,
+        pyr_scale=0.5, levels=3, winsize=15,
+        iterations=3, poly_n=5, poly_sigma=1.2, flags=0,
+    )
+    mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+    moving = mag[mag > 2.5]
+    if len(moving) < mag.size * 0.003:
+        return 0.0
+    speed_kmh = (float(np.mean(moving)) / pix_per_m) / dt * 3.6
+    return round(min(speed_kmh, 150.0), 1)
+
+
 # ── Helpers ─────────────────────────────────────────────────────────────────────
 def _b64_to_img(b64: str):
     data = base64.b64decode(b64)
@@ -294,6 +336,48 @@ async def detect(file: UploadFile = File(...)):
         "annotated_image": base64.b64encode(buf).decode(),
         "inference_ms":    ms,
     }
+
+class SpeedCamItem(BaseModel):
+    cam_id: int
+    stream_url: str
+
+class SpeedBatchRequest(BaseModel):
+    cameras:      List[SpeedCamItem]
+    pix_per_m:    float = 8.0
+    frame_gap_s:  float = 1.0
+
+@app.post("/speed-batch")
+async def speed_batch(req: SpeedBatchRequest):
+    """
+    Estimasi kecepatan untuk N kamera via optical flow paralel.
+    Pod grab 2 frame per kamera (frame_gap_s selisih) langsung dari stream_url.
+    Lebih efisien dari backend: tidak perlu transfer frame lewat HTTP.
+    """
+    import concurrent.futures
+
+    def _estimate(cam: SpeedCamItem):
+        try:
+            spd = _optical_flow_speed(cam.stream_url, req.pix_per_m, req.frame_gap_s)
+            return {"cam_id": cam.cam_id, "speed_kmh": spd, "ok": True}
+        except Exception as e:
+            return {"cam_id": cam.cam_id, "speed_kmh": None, "ok": False, "error": str(e)}
+
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        fmap = {pool.submit(_estimate, c): c for c in req.cameras}
+        done, _ = concurrent.futures.wait(fmap.keys(), timeout=90)
+        for fut in done:
+            try:
+                results.append(fut.result())
+            except Exception as e:
+                results.append({"speed_kmh": None, "ok": False, "error": str(e)})
+
+    return {
+        "results":   results,
+        "total":     len(req.cameras),
+        "completed": len(results),
+    }
+
 
 @app.delete("/trackers/{cam_id}")
 def reset_tracker(cam_id: int):
