@@ -478,7 +478,8 @@ def _heartbeat():
     while True:
         time.sleep(HB_INTERVAL)
         try:
-            requests.post(f"{BACKEND_URL}/api/gpu-heartbeat", timeout=5)
+            requests.post(f"{BACKEND_URL}/api/gpu-heartbeat",
+                          json={"url": TUNNEL_URL}, timeout=5)
         except Exception:
             _register()
 

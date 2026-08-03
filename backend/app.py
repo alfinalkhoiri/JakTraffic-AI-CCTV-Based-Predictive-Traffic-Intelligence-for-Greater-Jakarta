@@ -2740,10 +2740,20 @@ def gpu_register():
 
 @app.route("/api/gpu-heartbeat", methods=["POST", "GET"])
 def gpu_heartbeat():
-    """Periodic heartbeat dari GPU service — cukup update timestamp."""
+    """Periodic heartbeat dari GPU service — update timestamp + URL jika berubah."""
     import core.detector as det
     _gpu_state["last_heartbeat"] = time.time()
     det.mark_gpu_heartbeat()
+    # Jika GPU service kirim URL di payload, update agar backend selalu punya URL terbaru
+    try:
+        body = request.get_json(silent=True) or {}
+        url  = body.get("url", "")
+        if url and url != _gpu_state.get("url"):
+            det.set_gpu_url(url)
+            _gpu_state["url"] = url
+            logger.info("[GPU] URL diperbarui via heartbeat: %s", url)
+    except Exception:
+        pass
     return jsonify({"ok": True, "server_time": time.time()})
 
 
