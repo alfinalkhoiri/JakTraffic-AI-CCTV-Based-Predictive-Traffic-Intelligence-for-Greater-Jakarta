@@ -337,6 +337,39 @@ async def detect(file: UploadFile = File(...)):
         "inference_ms":    ms,
     }
 
+@app.post("/detect-boxes")
+async def detect_boxes(file: UploadFile = File(...), conf: float = 0.35):
+    """
+    Inferensi single frame, kembalikan bounding box per objek (format YOLO normalized xywh).
+    Digunakan oleh dataset_collector untuk auto-labeling.
+    """
+    data = await file.read()
+    arr  = np.frombuffer(data, np.uint8)
+    img  = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "Cannot decode image")
+    h, w = img.shape[:2]
+    results = model(img, classes=VEHICLE_CLASSES, conf=conf, iou=0.45, verbose=False)
+    boxes   = results[0].boxes
+    out = []
+    if boxes is not None:
+        for box in boxes:
+            cls_id  = int(box.cls.item())
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            bw = (x2 - x1) / w
+            bh = (y2 - y1) / h
+            out.append({
+                "cls_id":   cls_id,
+                "cls_name": _NAMES.get(cls_id, str(cls_id)),
+                "conf":     round(float(box.conf.item()), 4),
+                "cx":       round(((x1 + x2) / 2) / w, 6),
+                "cy":       round(((y1 + y2) / 2) / h, 6),
+                "bw":       round(bw, 6),
+                "bh":       round(bh, 6),
+            })
+    return {"boxes": out, "total": len(out)}
+
+
 class SpeedCamItem(BaseModel):
     cam_id: int
     stream_url: str
