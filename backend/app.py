@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 from flask_cors import CORS
 from flask_socketio import SocketIO
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -412,6 +412,15 @@ def gpu_scan_job():
         if count is None or "error" in res:
             return
         try:
+            # Simpan annotated frame GPU ke disk sebagai fallback preview
+            ann_b64 = res.get("annotated_image")
+            if ann_b64:
+                import base64 as _b64
+                frame_path = os.path.join("/tmp/gpu_frames", f"{cam_id}.jpg")
+                os.makedirs("/tmp/gpu_frames", exist_ok=True)
+                with open(frame_path, "wb") as fh:
+                    fh.write(_b64.b64decode(ann_b64))
+
             cam = cam_map.get(cam_id, {})
             _, new_status = calculate_decision(count, "Cerah"), calculate_decision(count, "Cerah")
             new_status = calculate_decision(count, "Cerah")[0]
@@ -806,6 +815,21 @@ def camera_snapshot(cam_path):
     except Exception as e:
         logger.error("[snapshot] fetch failed %s: %s", cam_path, e)
         return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/gpu-frame/<int:cam_id>")
+def gpu_frame(cam_id):
+    """Frame terakhir dari GPU scan — fallback preview saat stream HLS tidak bisa dibuka."""
+    frame_path = f"/tmp/gpu_frames/{cam_id}.jpg"
+    if not os.path.exists(frame_path):
+        return jsonify({"error": "frame not available"}), 404
+    age = time.time() - os.path.getmtime(frame_path)
+    if age > 300:   # lebih dari 5 menit → terlalu lama
+        return jsonify({"error": "frame too old"}), 404
+    resp = send_file(frame_path, mimetype="image/jpeg")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp
 
 # ======================================================
 # 🕐 SIMULASI: SET/GET WAKTU SIMULASI

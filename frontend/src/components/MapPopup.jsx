@@ -88,7 +88,7 @@ function MiniLight({ active }) {
   );
 }
 
-function LivePreview({ previewUrl, onStatusChange, onYoloResult }) {
+function LivePreview({ previewUrl, onStatusChange, onYoloResult, camId }) {
   const videoRef    = useRef(null);
   const canvasRef   = useRef(null);
   const hlsRef      = useRef(null);
@@ -98,12 +98,20 @@ function LivePreview({ previewUrl, onStatusChange, onYoloResult }) {
   const [status, setStatus]         = useState("loading");
   const [attempt, setAttempt]       = useState(0);
   const [yoloCount, setYoloCount]   = useState(null);
-  const [yoloImage, setYoloImage]   = useState(null); // annotated image dari YOLO
+  const [yoloImage, setYoloImage]   = useState(null);
+  const [gpuFrame, setGpuFrame]     = useState(null); // fallback frame dari GPU scan
 
   const updateStatus = useCallback((s) => {
     setStatus(s);
     if (onStatusChange) onStatusChange(s);
-  }, [onStatusChange]);
+    // Saat stream gagal, coba ambil GPU frame sebagai fallback
+    if (s === "offline" && camId) {
+      fetch(`${API}/api/gpu-frame/${camId}`)
+        .then(r => r.ok ? r.blob() : Promise.reject())
+        .then(blob => setGpuFrame(URL.createObjectURL(blob)))
+        .catch(() => {});
+    }
+  }, [onStatusChange, camId]);
 
   /* Auto-YOLO: capture frame → POST ke backend → update count */
   const captureAndDetect = useCallback(async () => {
@@ -173,9 +181,9 @@ function LivePreview({ previewUrl, onStatusChange, onYoloResult }) {
         maxBufferLength: 10,
         liveSyncDurationCount: 2,
         enableWorker: false,
-        manifestLoadingTimeOut: 14000,
-        manifestLoadingMaxRetry: 2,
-        fragLoadingMaxRetry: 2,
+        manifestLoadingTimeOut: 4000,
+        manifestLoadingMaxRetry: 1,
+        fragLoadingMaxRetry: 1,
       });
       hlsRef.current = hls;
       hls.loadSource(proxied);
@@ -241,6 +249,21 @@ function LivePreview({ previewUrl, onStatusChange, onYoloResult }) {
       )}
 
       {status === "offline" && (
+        gpuFrame ? (
+          /* GPU frame fallback — tampilkan frame terakhir dari GPU scan */
+          <>
+            <img src={gpuFrame} alt="GPU Frame"
+              style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", opacity:0.85 }} />
+            <div style={{ position:"absolute", top:8, left:8, background:"rgba(79,70,229,0.85)", borderRadius:999, padding:"2px 8px", display:"flex", alignItems:"center", gap:4 }}>
+              <span style={{ fontSize:10, color:"white", fontWeight:700 }}>⚡ GPU Snapshot</span>
+            </div>
+            <div style={{ position:"absolute", bottom:0, left:0, right:0, display:"flex", justifyContent:"center", padding:"4px 0", background:"rgba(15,23,42,0.7)" }}>
+              <button onClick={retry} style={{ fontSize:9, color:"#94a3b8", background:"transparent", border:"none", cursor:"pointer" }}>
+                ↺ Coba stream live
+              </button>
+            </div>
+          </>
+        ) : (
         <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8 }}>
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#334155" strokeWidth="1.2" strokeLinecap="round">
             <path d="M15 10l4.553-2.069A1 1 0 0121 8.87V15.13a1 1 0 01-1.447.899L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/>
@@ -262,6 +285,7 @@ function LivePreview({ previewUrl, onStatusChange, onYoloResult }) {
             </div>
           )}
         </div>
+        )
       )}
 
       {/* LIVE badge */}
@@ -369,7 +393,7 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
       {/* Preview — snapshot atau HLS stream */}
       {snapPath
         ? <SnapshotPreview snapPath={snapPath} onStatusChange={setStreamStatus} />
-        : <LivePreview previewUrl={liveUrl} onStatusChange={setStreamStatus} onYoloResult={setYoloLiveCount} />
+        : <LivePreview previewUrl={liveUrl} onStatusChange={setStreamStatus} onYoloResult={setYoloLiveCount} camId={cam.id} />
       }
 
       {/* Status strip */}
