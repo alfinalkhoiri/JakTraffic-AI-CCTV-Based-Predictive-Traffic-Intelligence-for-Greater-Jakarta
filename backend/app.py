@@ -541,8 +541,9 @@ def speed_estimation_job():
         logger.info("[SpeedJob] Tidak ada kamera healthy dengan vehicles≥2 (%d total tersedia)", len(cameras))
         return
 
-    gpu_url = detector.get_gpu_url()
-    if gpu_url and detector.is_gpu_healthy():
+    import core.detector as _det
+    gpu_url = _det.get_gpu_url()
+    if gpu_url and _det.is_gpu_healthy():
         # Delegasi ke GPU service — pod grab stream sendiri, lebih efisien
         payload = {
             "cameras": [
@@ -556,6 +557,8 @@ def speed_estimation_job():
             resp = requests.post(f"{gpu_url}/speed-batch", json=payload, timeout=120)
             resp.raise_for_status()
             results = resp.json().get("results", [])
+            logger.info("[SpeedJob] GPU speed-batch: %d kamera → %d hasil",
+                        len(healthy_cams), len(results))
         except Exception as e:
             logger.error("[SpeedJob] GPU speed-batch gagal: %s", e)
             results = []
@@ -590,7 +593,7 @@ def speed_estimation_job():
             logger.debug("[SpeedJob] DB update cam %s: %s", cam_id, e)
 
     logger.info("[SpeedJob] Speed diperbarui %d/%d kamera (via %s)",
-                updated, len(healthy_cams), "GPU" if gpu_url and detector.is_gpu_healthy() else "CPU")
+                updated, len(healthy_cams), "GPU" if gpu_url and _det.is_gpu_healthy() else "CPU")
 
 
 scheduler = BackgroundScheduler()
