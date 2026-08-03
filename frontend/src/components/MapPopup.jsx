@@ -100,6 +100,7 @@ function LivePreview({ previewUrl, onStatusChange, onYoloResult, camId }) {
   const [yoloCount, setYoloCount]   = useState(null);
   const [yoloImage, setYoloImage]   = useState(null);
   const [gpuFrame, setGpuFrame]     = useState(null); // fallback frame dari GPU scan
+  const [frameAge, setFrameAge]     = useState(null); // usia frame dalam detik
 
   const updateStatus = useCallback((s) => {
     setStatus(s);
@@ -107,9 +108,14 @@ function LivePreview({ previewUrl, onStatusChange, onYoloResult, camId }) {
     // Saat stream gagal, coba ambil GPU frame sebagai fallback
     if (s === "offline" && camId) {
       fetch(`${API}/api/gpu-frame/${camId}`)
-        .then(r => r.ok ? r.blob() : Promise.reject())
+        .then(r => {
+          if (!r.ok) return Promise.reject();
+          const age = parseInt(r.headers.get("X-Frame-Age-Seconds") || "0", 10);
+          setFrameAge(age);
+          return r.blob();
+        })
         .then(blob => setGpuFrame(URL.createObjectURL(blob)))
-        .catch(() => {});
+        .catch(() => setGpuFrame(null));
     }
   }, [onStatusChange, camId]);
 
@@ -255,7 +261,14 @@ function LivePreview({ previewUrl, onStatusChange, onYoloResult, camId }) {
             <img src={gpuFrame} alt="GPU Frame"
               style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", opacity:0.85 }} />
             <div style={{ position:"absolute", top:8, left:8, background:"rgba(79,70,229,0.85)", borderRadius:999, padding:"2px 8px", display:"flex", alignItems:"center", gap:4 }}>
-              <span style={{ fontSize:10, color:"white", fontWeight:700 }}>⚡ GPU Snapshot</span>
+              <span style={{ fontSize:10, color:"white", fontWeight:700 }}>
+                ⚡ GPU Snapshot
+                {frameAge != null && frameAge > 0 && (
+                  <span style={{ fontWeight:400, opacity:0.8 }}>
+                    {" "}· {frameAge < 60 ? `${frameAge}d lalu` : `${Math.round(frameAge/60)}m lalu`}
+                  </span>
+                )}
+              </span>
             </div>
             <div style={{ position:"absolute", bottom:0, left:0, right:0, display:"flex", justifyContent:"center", padding:"4px 0", background:"rgba(15,23,42,0.7)" }}>
               <button onClick={retry} style={{ fontSize:9, color:"#94a3b8", background:"transparent", border:"none", cursor:"pointer" }}>

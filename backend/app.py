@@ -831,11 +831,13 @@ def gpu_frame(cam_id):
     if not os.path.exists(frame_path):
         return jsonify({"error": "frame not available"}), 404
     age = time.time() - os.path.getmtime(frame_path)
-    if age > 300:   # lebih dari 5 menit → terlalu lama
+    if age > 1800:  # lebih dari 30 menit → terlalu lama
         return jsonify({"error": "frame too old"}), 404
     resp = send_file(frame_path, mimetype="image/jpeg")
     resp.headers["Cache-Control"] = "no-cache"
     resp.headers["Access-Control-Allow-Origin"] = "*"
+    # Header usia frame agar frontend bisa tampilkan waktu snapshot
+    resp.headers["X-Frame-Age-Seconds"] = str(int(age))
     return resp
 
 # ======================================================
