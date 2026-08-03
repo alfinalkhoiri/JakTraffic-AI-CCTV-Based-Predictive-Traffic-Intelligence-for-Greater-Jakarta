@@ -2960,13 +2960,12 @@ def training_yolo11l_script():
 
 @app.route("/api/training/yolo11x")
 def training_yolo11x_script():
-    """Serve 02_train_yolo11x.py untuk dijalankan di GPU server."""
-    script_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "training", "02_train_yolo11x.py"))
+    """Serve train_jaktraffic_v2.py untuk dijalankan di GPU pod."""
+    script_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "training", "train_jaktraffic_v2.py"))
     if not os.path.exists(script_path):
-        return jsonify({"error": "02_train_yolo11x.py tidak ditemukan"}), 404
-    from flask import send_file
+        return jsonify({"error": "train_jaktraffic_v2.py tidak ditemukan"}), 404
     return send_file(script_path, as_attachment=False,
-                     download_name="02_train_yolo11x.py",
+                     download_name="train_jaktraffic_v2.py",
                      mimetype="text/x-python")
 
 @app.route("/api/gpu/model/backup", methods=["POST"])
@@ -2994,22 +2993,42 @@ def dataset_collect_now():
 
 @app.route("/api/dataset/download")
 def dataset_download():
-    """Download seluruh dataset sebagai ZIP (untuk training di Colab/RunPod)."""
-    import zipfile, io
-    from flask import send_file as _sf
+    """Download seluruh dataset sebagai ZIP dengan prefix folder 'dataset/' (browser download)."""
+    import zipfile, io as _io
     from core.dataset_collector import DATASET_DIR
     if not DATASET_DIR.exists():
         return jsonify({"error": "Dataset belum ada"}), 404
-    buf = io.BytesIO()
+    buf = _io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in sorted(DATASET_DIR.rglob("*")):
             if f.is_file():
                 zf.write(f, f.relative_to(DATASET_DIR.parent))
     buf.seek(0)
     ts = datetime.now().strftime("%Y%m%d_%H%M")
-    return _sf(buf, as_attachment=True,
-               download_name=f"jaktraffic_dataset_{ts}.zip",
-               mimetype="application/zip")
+    return send_file(buf, as_attachment=True,
+                     download_name=f"jaktraffic_dataset_{ts}.zip",
+                     mimetype="application/zip")
+
+@app.route("/api/dataset/zip")
+def dataset_zip():
+    """Download dataset sebagai ZIP tanpa prefix folder — untuk GPU pod /train/start."""
+    import zipfile, io as _io
+    from core.dataset_collector import DATASET_DIR
+    if not DATASET_DIR.exists():
+        return jsonify({"error": "Dataset belum ada"}), 404
+    n_imgs = len(list(DATASET_DIR.rglob("*.jpg")))
+    if n_imgs < 50:
+        return jsonify({"error": f"Dataset terlalu kecil ({n_imgs} gambar)"}), 400
+    buf = _io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in sorted(DATASET_DIR.rglob("*")):
+            if f.is_file():
+                zf.write(f, f.relative_to(DATASET_DIR))  # tanpa prefix 'dataset/'
+    buf.seek(0)
+    logger.info("[Dataset] ZIP disiapkan: %d gambar", n_imgs)
+    return send_file(buf, as_attachment=False,
+                     download_name="jaktraffic_dataset.zip",
+                     mimetype="application/zip")
 
 @app.route("/api/gpu-service/v4")
 def serve_gpu_service_v4():
