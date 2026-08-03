@@ -489,9 +489,65 @@ def _dataset_collection_job():
     """Ambil 1 frame per kamera aktif, auto-label, simpan ke dataset/ setiap 30 menit."""
     run_collection_round(db_handler, detector.model)
 
+
+def speed_estimation_job():
+    """
+    Estimasi kecepatan untuk 20 kamera tersibuk via optical flow (setiap 5 menit).
+    Lebih akurat dari ByteTrack untuk scan interval 60 detik karena
+    optical flow hanya butuh 2 frame berjarak ~1 detik dari kamera yang sama.
+    """
+    try:
+        conn = db_handler.get_db_connection()
+        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # Ambil 20 kamera dengan kendaraan terbanyak yang punya stream aktif
+        cur.execute("""
+            SELECT ct.id, ct.vehicles, cl.stream_url
+            FROM current_traffic ct
+            JOIN cctv_locations cl ON ct.id = cl.id
+            WHERE cl.stream_url IS NOT NULL AND cl.stream_url != ''
+              AND ct.vehicles >= 2
+            ORDER BY ct.vehicles DESC
+            LIMIT 20
+        """)
+        cameras = cur.fetchall()
+        conn.close()
+    except Exception as e:
+        logger.error("[SpeedJob] DB error: %s", e)
+        return
+
+    if not cameras:
+        return
+
+    vdet = detector.VideoDetector()
+    updated = 0
+    for cam in cameras:
+        try:
+            url   = _resolve_stream_url(cam["stream_url"])
+            speed = vdet.estimate_speed(url, cam["id"])
+            if speed is None:
+                continue
+            conn2 = db_handler.get_db_connection()
+            cur2  = conn2.cursor()
+            cur2.execute(
+                "UPDATE current_traffic SET speed_kmh=%s WHERE id=%s",
+                (speed, cam["id"])
+            )
+            conn2.commit(); conn2.close()
+            h = _cam_health.get(cam["id"], {})
+            h["speed_kmh"] = speed
+            _cam_health[cam["id"]] = h
+            updated += 1
+        except Exception as e:
+            logger.debug("[SpeedJob] cam %s: %s", cam["id"], e)
+
+    logger.info("[SpeedJob] Speed diperbarui untuk %d/%d kamera", updated, len(cameras))
+
+
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=mining_job,  trigger="interval", minutes=2,  max_instances=1, coalesce=True)
 scheduler.add_job(func=gpu_scan_job, trigger="interval", seconds=60, max_instances=1, coalesce=True, id="gpu_scanner")
+scheduler.add_job(func=speed_estimation_job, trigger="interval", minutes=5,
+                  max_instances=1, coalesce=True, id="speed_estimator")
 scheduler.add_job(func=_dataset_collection_job, trigger="interval", minutes=30,
                   max_instances=1, coalesce=True, id="dataset_collector",
                   next_run_time=datetime.now())   # jalankan langsung saat start
