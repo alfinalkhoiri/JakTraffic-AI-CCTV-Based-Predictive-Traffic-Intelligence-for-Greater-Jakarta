@@ -472,6 +472,11 @@ def gpu_scan_job():
 
     try:
         updated = db_handler.get_all_cctv_status()
+        # Konversi datetime ke string agar JSON-serializable
+        for row in (updated if isinstance(updated, list) else []):
+            for k, v in list(row.items()):
+                if isinstance(v, datetime):
+                    row[k] = v.strftime("%Y-%m-%d %H:%M:%S")
         socketio.emit("traffic_update", updated)
         socketio.emit("gpu_scan_complete", {
             "timestamp":       timestamp,
