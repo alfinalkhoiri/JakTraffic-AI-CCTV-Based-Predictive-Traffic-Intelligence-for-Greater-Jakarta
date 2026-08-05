@@ -185,13 +185,18 @@ def calculate_traffic_score(vehicle_count, truck_count, weather_text):
     return min(score, 100)
 
 
-def _grab_frame(stream_url, timeout_s=4):
+def _grab_frame(stream_url, timeout_s=6):
     """Buka stream HLS, ambil frame pertama dalam timeout_s detik.
 
-    Menggunakan cv2.VideoCapture secara langsung (tanpa thread wrapper).
-    Python-level timeout dipakai oleh gpu_scan_job via concurrent.futures.wait().
+    CAP_PROP_OPEN_TIMEOUT_MSEC + CAP_PROP_READ_TIMEOUT_MSEC (OpenCV 4.0+) memastikan
+    cap.read() tidak blocking selamanya di C++ — setiap operasi dibatasi oleh timeout_ms.
+    Ini mencegah thread executor menumpuk ketika banyak kamera tidak bisa diakses.
     """
-    cap = cv2.VideoCapture(stream_url)
+    timeout_ms = int(timeout_s * 1000)
+    cap = cv2.VideoCapture()
+    cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, timeout_ms)
+    cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, timeout_ms)
+    cap.open(stream_url)
     frame = None
     start = time.time()
     while time.time() - start < timeout_s:

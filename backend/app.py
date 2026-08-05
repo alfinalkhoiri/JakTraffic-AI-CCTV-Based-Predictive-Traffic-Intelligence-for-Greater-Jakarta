@@ -354,6 +354,7 @@ def gpu_scan_job():
         if not _tr.ok or _tr.json().get("status") == "running":
             logger.debug("[GPU Scanner] Training aktif di pod, skip scan")
             return
+        det.mark_gpu_heartbeat()  # pod merespons → perbarui heartbeat
     except Exception:
         logger.debug("[GPU Scanner] Training status check gagal, skip scan")
         return
@@ -401,7 +402,7 @@ def gpu_scan_job():
     ex = ThreadPoolExecutor(max_workers=24)
     futs = {ex.submit(_grab, cam): cam for cam in cameras}
     done, _ = concurrent.futures.wait(futs.keys(), timeout=_GRAB_DEADLINE)
-    ex.shutdown(wait=False)   # jangan tunggu sisa thread — executor tasks sudah di-abandon
+    ex.shutdown(wait=False, cancel_futures=True)  # cancel queued tasks yg belum mulai, jangan tunggu running
     grabbed = []
     for f in done:
         try:

@@ -94,10 +94,11 @@ names: {names}
 
 def _grab_frame(stream_url: str, timeout_s: int = 6):
     """Ambil 1 frame dari stream HLS."""
-    os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = (
-        'user_agent;Mozilla/5.0|protocol_whitelist;file,crypto,data,http,https,tcp,tls,udp|timeout;6000000'
-    )
-    cap = cv2.VideoCapture(stream_url)
+    timeout_ms = int(timeout_s * 1000)
+    cap = cv2.VideoCapture()
+    cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, timeout_ms)
+    cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, timeout_ms)
+    cap.open(stream_url)
     frame = None
     start = time.time()
     while time.time() - start < timeout_s:
