@@ -359,18 +359,24 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
       .catch(() => {});
   }, [cam.id]);
 
-  // Jika ada data kecepatan segar dari GPU scan (< 90 detik), pakai langsung
+  // Speed dari DB — tampilkan jika ada (max 15 menit), auto-fetch untuk semua kamera
+  const [speedAge, setSpeedAge] = useState(null); // usia data speed dalam detik
   useEffect(() => {
-    if (cam.speed_kmh != null && cam.last_gpu_scan) {
-      const age = (Date.now() - new Date(cam.last_gpu_scan).getTime()) / 1000;
-      if (age < 90) { setSpeed(parseFloat(cam.speed_kmh)); return; }
+    // Gunakan speed dari DB langsung jika ada (SpeedJob update setiap 5 menit)
+    if (cam.speed_kmh != null) {
+      setSpeed(parseFloat(cam.speed_kmh));
+      if (cam.last_gpu_scan) {
+        const age = Math.round((Date.now() - new Date(cam.last_gpu_scan).getTime()) / 1000);
+        setSpeedAge(age);
+      }
+      return;
     }
-    // Auto-fetch hanya untuk kamera tol (stream_url ada) saat popup buka
-    if (cam.stream_url && cam.road_type === 'toll') {
+    // Fallback: fetch live speed untuk kamera dengan stream aktif
+    if (cam.stream_url) {
       setSpeedLoading(true);
       fetch(`${API}/api/camera-speed/${cam.id}`)
         .then(r => r.ok ? r.json() : null)
-        .then(d => { if (d?.speed_kmh != null) setSpeed(parseFloat(d.speed_kmh)); })
+        .then(d => { if (d?.speed_kmh != null) { setSpeed(parseFloat(d.speed_kmh)); setSpeedAge(0); } })
         .catch(() => {})
         .finally(() => setSpeedLoading(false));
     }
@@ -442,13 +448,13 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
         })()}
       </div>
 
-      {/* Speed bar — tampil hanya jika ada ≥5 kendaraan DAN speed > 2 (1-2 km/h = noise kompresi HLS) */}
-      {(cam.stream_url || speedLoading) && v >= 5 && (speed === null || speed > 2) && (
+      {/* Speed bar — tampil jika ada ≥5 kendaraan, data speed ada (dari DB atau live) */}
+      {v >= 5 && (speedLoading || speed !== null) && (speed === null || speed > 2) && (
         <div style={{ padding: '6px 12px', background: '#0f172a', borderBottom: '1px solid #1e293b' }}>
           {speedLoading ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 10, color: '#64748b', animation: 'pulse 1.2s infinite' }}>⏳</span>
-              <span style={{ fontSize: 10, color: '#64748b' }}>Mengukur kecepatan lalu lintas...</span>
+              <span style={{ fontSize: 10, color: '#64748b' }}>⏳</span>
+              <span style={{ fontSize: 10, color: '#64748b' }}>Mengukur kecepatan...</span>
             </div>
           ) : speed !== null ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -456,13 +462,20 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
                 {Math.round(speed)}
               </span>
               <div>
-                <div style={{ fontSize: 9, color: '#64748b', lineHeight: 1 }}>km/h rata-rata</div>
+                <div style={{ fontSize: 9, color: '#64748b', lineHeight: 1 }}>
+                  km/h rata-rata
+                  {speedAge != null && speedAge > 90 && (
+                    <span style={{ color: '#475569', marginLeft: 4 }}>
+                      · {speedAge < 3600 ? `${Math.round(speedAge/60)}m lalu` : `${Math.round(speedAge/3600)}j lalu`}
+                    </span>
+                  )}
+                </div>
                 <div style={{ fontSize: 10, color: speedColor, fontWeight: 700, lineHeight: 1.4 }}>{speedLabel}</div>
               </div>
-              {/* Progress bar */}
               <div style={{ flex: 1, height: 4, background: '#1e293b', borderRadius: 2, overflow: 'hidden', marginLeft: 4 }}>
                 <div style={{
-                  height: '100%', borderRadius: 2, background: speedColor,
+                  height: '100%', borderRadius: 2,
+                  background: speedAge != null && speedAge > 600 ? '#475569' : speedColor,
                   width: `${Math.min(100, (speed / 80) * 100)}%`,
                   transition: 'width .6s ease'
                 }} />
@@ -476,6 +489,12 @@ export default function MapPopup({ cam, effectiveVehicles, onSelectDetail, showS
       <div style={{ padding: "10px 12px" }}>
         {isToll && (
           <p style={{ fontSize: 9, color: "#f59e0b", fontWeight: 700, textTransform: "uppercase", margin: "0 0 3px" }}>🛣️ JALAN TOL</p>
+        )}
+        {/* Source badge */}
+        {cam.stream_url?.includes('balitower') && (
+          <p style={{ fontSize: 9, color: "#67e8f9", fontWeight: 700, margin: "0 0 3px" }}>
+            📡 Balitower CCTV
+          </p>
         )}
         <p style={{ fontSize: 14, fontWeight: 700, color: "white", margin: "0 0 6px", lineHeight: 1.3 }}>{cam.name}</p>
 

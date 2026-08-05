@@ -10,7 +10,7 @@ from database.db_handler import update_traffic_data
 os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = (
     'user_agent;Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36|'
     'protocol_whitelist;file,crypto,data,http,https,tcp,tls,udp|'
-    'timeout;10000000'
+    'timeout;8000000'
 )
 
 # ── GPU Inference Service ────────────────────────────────────────────────────
@@ -23,9 +23,14 @@ _gpu_available    = False
 _GPU_HB_TIMEOUT   = 90     # detik — jika tidak ada heartbeat, anggap GPU down
 
 def get_gpu_url():
+    # Prioritaskan runtime URL (dari heartbeat/register pod)
     if _gpu_runtime_url:
         return _gpu_runtime_url
-    return _GPU_ENV_URL
+    # .env URL hanya dipakai jika belum pernah ada heartbeat (startup awal)
+    if _gpu_last_hb == 0.0 and _GPU_ENV_URL:
+        return _GPU_ENV_URL
+    # Sudah ada heartbeat tapi URL belum diset → pod sedang startup tunnel
+    return ""
 
 def set_gpu_url(url: str):
     global _gpu_runtime_url, _gpu_available, _gpu_last_hb
@@ -43,12 +48,30 @@ def is_gpu_healthy():
         return False
     return (time.time() - _gpu_last_hb) < _GPU_HB_TIMEOUT
 
+def _probe_tunnel_url(base_url: str) -> str:
+    """Tanya pod URL tunnel aktifnya — berguna setelah backend restart."""
+    try:
+        r = requests.get(f"{base_url}/tunnel-url", timeout=5)
+        if r.status_code == 200:
+            return r.json().get("url", "").rstrip("/")
+    except Exception:
+        pass
+    return ""
+
 def _check_gpu_service():
-    global _gpu_available, _gpu_last_hb
+    global _gpu_available, _gpu_last_hb, _gpu_runtime_url
     url = get_gpu_url()
     if not url:
         return False
     try:
+        # Jika URL dari .env, coba tanya pod URL tunnel aktif (mungkin beda setelah pod restart)
+        if url == _GPU_ENV_URL and not _gpu_runtime_url:
+            live_url = _probe_tunnel_url(url)
+            if live_url and live_url != url:
+                _gpu_runtime_url = live_url
+                print(f"[GPU] Tunnel URL diupdate dari pod: {live_url}")
+                url = live_url
+
         r = requests.get(f"{url}/health", timeout=5)
         if r.status_code == 200:
             info = r.json()
@@ -163,7 +186,11 @@ def calculate_traffic_score(vehicle_count, truck_count, weather_text):
 
 
 def _grab_frame(stream_url, timeout_s=4):
-    """Buka stream HLS, ambil frame pertama yang berhasil decode dalam timeout_s detik."""
+    """Buka stream HLS, ambil frame pertama dalam timeout_s detik.
+
+    Menggunakan cv2.VideoCapture secara langsung (tanpa thread wrapper).
+    Python-level timeout dipakai oleh gpu_scan_job via concurrent.futures.wait().
+    """
     cap = cv2.VideoCapture(stream_url)
     frame = None
     start = time.time()

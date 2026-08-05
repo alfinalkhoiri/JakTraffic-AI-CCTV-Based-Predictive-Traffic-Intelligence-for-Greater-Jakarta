@@ -390,7 +390,11 @@ async def speed_batch(req: SpeedBatchRequest):
 
     def _estimate(cam: SpeedCamItem):
         try:
-            spd = _optical_flow_speed(cam.stream_url, req.pix_per_m, req.frame_gap_s)
+            # Prioritas 1: tracker history (sudah ada dari detect-batch, lebih akurat)
+            spd = _speed_from_tracks(cam.cam_id)
+            # Fallback: optical flow langsung dari stream
+            if spd is None and cam.stream_url:
+                spd = _optical_flow_speed(cam.stream_url, req.pix_per_m, req.frame_gap_s)
             return {"cam_id": cam.cam_id, "speed_kmh": spd, "ok": True}
         except Exception as e:
             return {"cam_id": cam.cam_id, "speed_kmh": None, "ok": False, "error": str(e)}
@@ -542,23 +546,51 @@ def stop_training():
     return {"ok": False, "msg": "Tidak ada training yang berjalan"}
 
 # ── Cloudflare Tunnel ──────────────────────────────────────────────────────────
+CF_LOG = "/tmp/cf.log"
+
+def _read_existing_tunnel_url() -> str:
+    """Baca URL tunnel dari log cloudflared yang sudah jalan (jika ada)."""
+    try:
+        if os.path.exists(CF_LOG):
+            with open(CF_LOG) as f:
+                content = f.read()
+            m = re.search(r"https://[^\s]+\.trycloudflare\.com", content)
+            if m:
+                return m.group(0)
+    except Exception:
+        pass
+    return ""
+
 def _start_tunnel():
     global TUNNEL_URL
+    # Coba baca URL dari log cloudflared yang sudah jalan
+    existing = _read_existing_tunnel_url()
+    if existing:
+        TUNNEL_URL = existing
+        print(f"[GPU v4] Reuse tunnel dari log: {TUNNEL_URL}")
+        _register()
+
     cf = "/tmp/cloudflared"
     if not os.path.exists(cf):
         cf = "cloudflared"
-    proc = subprocess.Popen(
-        [cf, "tunnel", "--url", f"http://localhost:{PORT}", "--no-autoupdate"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-    )
-    for line in proc.stdout:
-        m = re.search(r"https://[^\s]+\.trycloudflare\.com", line)
-        if m:
-            TUNNEL_URL = m.group(0)
-            print(f"[GPU v4] Tunnel: {TUNNEL_URL}")
-            _register()
-            break
-    proc.wait()
+    try:
+        with open(CF_LOG, "w") as logf:
+            proc = subprocess.Popen(
+                [cf, "tunnel", "--url", f"http://localhost:{PORT}", "--no-autoupdate"],
+                stdout=logf, stderr=logf,
+            )
+        # Baca URL dari log
+        for _ in range(30):
+            time.sleep(2)
+            url = _read_existing_tunnel_url()
+            if url and url != TUNNEL_URL:
+                TUNNEL_URL = url
+                print(f"[GPU v4] Tunnel baru: {TUNNEL_URL}")
+                _register()
+                break
+        proc.wait()
+    except Exception as e:
+        print(f"[GPU v4] Tunnel error: {e}")
 
 def _register():
     if not TUNNEL_URL:
@@ -591,12 +623,18 @@ def _register():
             print(f"[GPU v4] Register err {attempt+1}: {e}")
         time.sleep(5 * (attempt + 1))
 
+@app.get("/tunnel-url")
+async def get_tunnel_url():
+    """Kembalikan URL tunnel aktif — dipakai backend untuk re-register setelah restart."""
+    return {"url": TUNNEL_URL or "", "healthy": True}
+
 def _heartbeat():
     while True:
         time.sleep(HB_INTERVAL)
         try:
+            # Selalu kirim URL — backend update jika berubah
             requests.post(f"{BACKEND_URL}/api/gpu-heartbeat",
-                          json={"url": TUNNEL_URL}, timeout=5)
+                          json={"url": TUNNEL_URL or ""}, timeout=5)
         except Exception:
             _register()
 

@@ -2,6 +2,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 from flask_cors import CORS
 from flask_socketio import SocketIO
 from apscheduler.schedulers.background import BackgroundScheduler
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 from datetime import datetime, timedelta
@@ -186,14 +187,28 @@ def _process_single_camera(cctv, timestamp):
 
 
 def mining_job():
-    logger.info("=== Memulai Mining Data Realtime (4 workers) ===")
+    import core.detector as _det
+    gpu_ok = _det.get_gpu_url() and _det.is_gpu_healthy()
+
     cctv_list = db_handler.get_all_cctv_status()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if gpu_ok:
+        # GPU aktif → gpu_scan_job sudah handle kamera dengan stream.
+        # mining_job hanya proses kamera TANPA stream (simulasi) agar tidak redundan.
+        sim_cams = [c for c in cctv_list if not c.get("stream_url")]
+        logger.info("[MiningJob] GPU aktif — skip %d kamera berstream, proses %d kamera simulasi",
+                    len(cctv_list) - len(sim_cams), len(sim_cams))
+        targets = sim_cams
+    else:
+        # GPU offline → proses semua kamera via CPU (fallback)
+        logger.info("[MiningJob] GPU offline — proses %d kamera via CPU", len(cctv_list))
+        targets = cctv_list
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {
             executor.submit(_process_single_camera, cctv, timestamp): cctv
-            for cctv in cctv_list
+            for cctv in targets
         }
         for future in as_completed(futures):
             try:
@@ -202,11 +217,15 @@ def mining_job():
                 cctv = futures[future]
                 logger.error(f"Thread error lokasi {cctv.get('id')}: {e}")
 
-    logger.info("=== Mining selesai (%d kamera) ===", len(cctv_list))
+    logger.info("=== Mining selesai (%d kamera) ===", len(targets))
 
     # Push live update ke semua WebSocket client
     try:
         updated = db_handler.get_all_cctv_status()
+        for row in (updated if isinstance(updated, list) else []):
+            for k, v in list(row.items()):
+                if isinstance(v, datetime):
+                    row[k] = v.strftime("%Y-%m-%d %H:%M:%S")
         socketio.emit("traffic_update", updated)
     except Exception as _ws_err:
         logger.warning("[WS] emit error: %s", _ws_err)
@@ -297,7 +316,7 @@ except Exception as _init_err:
 
 # ── GPU State ────────────────────────────────────────────────────────────────
 _gpu_state = {
-    "url": os.getenv("GPU_INFERENCE_URL", "").rstrip("/"),
+    "url": "",          # tidak pakai .env — wajib tunggu pod register via heartbeat/register
     "last_heartbeat": 0.0,
     "gpu_info": {},
     "scan_stats": {
@@ -326,6 +345,17 @@ def gpu_scan_job():
 
     if not det.is_gpu_healthy():
         logger.debug("[GPU Scanner] GPU tidak sehat, skip scan")
+        return
+
+    # Skip scan jika GPU sedang training — hindari VRAM contention
+    # Jika check gagal (timeout/error), anggap training sedang jalan dan skip
+    try:
+        _tr = requests.get(f"{det.get_gpu_url()}/train/status", timeout=3)
+        if not _tr.ok or _tr.json().get("status") == "running":
+            logger.debug("[GPU Scanner] Training aktif di pod, skip scan")
+            return
+    except Exception:
+        logger.debug("[GPU Scanner] Training status check gagal, skip scan")
         return
 
     try:
@@ -365,14 +395,28 @@ def gpu_scan_job():
             _cam_health_err(cam["id"])
         return None
 
-    with ThreadPoolExecutor(max_workers=24) as ex:
-        grabbed = [r for r in ex.map(_grab, cameras) if r is not None]
+    # Batas waktu total fase grab: 50 detik untuk semua kamera.
+    # Tidak pakai 'with' agar executor.shutdown(wait=False) — kamera yg belum selesai ditinggal.
+    _GRAB_DEADLINE = 50
+    ex = ThreadPoolExecutor(max_workers=24)
+    futs = {ex.submit(_grab, cam): cam for cam in cameras}
+    done, _ = concurrent.futures.wait(futs.keys(), timeout=_GRAB_DEADLINE)
+    ex.shutdown(wait=False)   # jangan tunggu sisa thread — executor tasks sudah di-abandon
+    grabbed = []
+    for f in done:
+        try:
+            r = f.result()
+            if r is not None:
+                grabbed.append(r)
+        except Exception:
+            pass
 
     if not grabbed:
         logger.warning("[GPU Scanner] Tidak ada frame berhasil diambil")
         return
 
-    logger.info("[GPU Scanner] Grabbed %d/%d frame", len(grabbed), len(cameras))
+    logger.info("[GPU Scanner] Grabbed %d/%d frame (deadline %ds)",
+                len(grabbed), len(cameras), _GRAB_DEADLINE)
 
     # ── Step 2 & 3: Kirim batch ke GPU — 1 forward pass untuk semua frame ─────
     CHUNK = 32   # sesuai BATCH_SIZE di gpu_service_v4 (VRAM L40S aman hingga 32)
@@ -532,18 +576,25 @@ def speed_estimation_job():
         logger.error("[SpeedJob] DB error: %s", e)
         return
 
-    # Saring kamera yang streamnya diketahui sering gagal
-    healthy_cams = [
-        c for c in cameras
-        if _cam_health.get(c["id"], {}).get("consecutive_errors", 0) < 3
-    ]
-    if not healthy_cams:
-        logger.info("[SpeedJob] Tidak ada kamera healthy dengan vehicles≥2 (%d total tersedia)", len(cameras))
-        return
-
     import core.detector as _det
     gpu_url = _det.get_gpu_url()
-    if gpu_url and _det.is_gpu_healthy():
+    gpu_ok  = bool(gpu_url and _det.is_gpu_healthy())
+
+    if gpu_ok:
+        # GPU mode: filter kamera yang streamnya sering gagal (pod grab sendiri, mahal)
+        healthy_cams = [
+            c for c in cameras
+            if _cam_health.get(c["id"], {}).get("consecutive_errors", 0) < 5
+        ]
+    else:
+        # CPU fallback: pakai semua kamera, optical flow handle error per-kamera
+        healthy_cams = cameras
+
+    if not healthy_cams:
+        logger.info("[SpeedJob] Tidak ada kamera dengan vehicles≥2 (%d tersedia)", len(cameras))
+        return
+
+    if gpu_ok:
         # Delegasi ke GPU service — pod grab stream sendiri, lebih efisien
         payload = {
             "cameras": [
@@ -593,7 +644,7 @@ def speed_estimation_job():
             logger.debug("[SpeedJob] DB update cam %s: %s", cam_id, e)
 
     logger.info("[SpeedJob] Speed diperbarui %d/%d kamera (via %s)",
-                updated, len(healthy_cams), "GPU" if gpu_url and _det.is_gpu_healthy() else "CPU")
+                updated, len(healthy_cams), "GPU" if gpu_ok else "CPU")
 
 
 scheduler = BackgroundScheduler()
@@ -2901,12 +2952,23 @@ def yolo_model_upload():
 
 @app.route("/api/yolo-model/download")
 def yolo_model_download():
-    """GPU server download model terbaru."""
+    """GPU server download model terbaru (hasil training)."""
     if not os.path.exists(YOLO_MODEL_PATH):
         return jsonify({"error": "Model belum diupload"}), 404
     from flask import send_file
     return send_file(YOLO_MODEL_PATH, as_attachment=True,
                      download_name="jaktraffic_yolo.pt",
+                     mimetype="application/octet-stream")
+
+@app.route("/api/yolo-model/download/base")
+def yolo_model_download_base():
+    """Download model Indonesia asli (jaktraffic_yolo11x.pt, ~110MB) sebagai base training."""
+    base_path = os.path.join(YOLO_MODEL_DIR, "jaktraffic_yolo11x.pt")
+    if not os.path.exists(base_path):
+        return jsonify({"error": "Base model tidak ditemukan"}), 404
+    from flask import send_file
+    return send_file(base_path, as_attachment=True,
+                     download_name="jaktraffic_yolo11x.pt",
                      mimetype="application/octet-stream")
 
 @app.route("/api/yolo-model/info")

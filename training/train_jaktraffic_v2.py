@@ -82,28 +82,40 @@ if n_train < 100:
     sys.exit(1)
 
 # ── Load base model ───────────────────────────────────────────────────────────
-# Cari Indonesia model — fine-tune lanjutan lebih baik dari scratch
+# Prioritaskan jaktraffic_yolo11x.pt (110MB, Indonesia model penuh)
+# bukan jaktraffic_yolo.pt yang mungkin hasil training sebelumnya (lebih kecil)
 BASE_CANDIDATES = [
-    "/home/jovyan/jaktraffic_yolo.pt",
-    "/tmp/jaktraffic_yolo.pt",
     "/home/jovyan/jaktraffic_yolo11x.pt",
     "/tmp/jaktraffic_yolo11x.pt",
+    "/home/jovyan/jaktraffic_pseudo/jaktraffic_yolo11x.pt",
+    "/home/jovyan/jaktraffic_yolo.pt",
+    "/tmp/jaktraffic_yolo.pt",
 ]
-base_model_path = next((p for p in BASE_CANDIDATES if os.path.exists(p)), None)
+base_model_path = next((p for p in BASE_CANDIDATES if os.path.exists(p) and os.path.getsize(p) > 50_000_000), None)
+if not base_model_path:
+    # Cek juga file kecil sebagai last resort
+    base_model_path = next((p for p in BASE_CANDIDATES if os.path.exists(p)), None)
+
 if base_model_path:
-    log(f"Fine-tune dari model Indonesia: {base_model_path}")
+    size_mb = os.path.getsize(base_model_path) / 1e6
+    log(f"Fine-tune dari: {base_model_path} ({size_mb:.0f} MB)")
+    if size_mb < 50:
+        log("PERINGATAN: Model base lebih kecil dari 50MB — bukan YOLO11x penuh!")
 else:
-    log("Model Indonesia tidak ditemukan — download dari backend ...")
-    r = requests.get(f"{BACKEND_URL}/api/yolo-model/download", stream=True, timeout=120)
+    log("Model Indonesia tidak ditemukan — download jaktraffic_yolo11x.pt dari backend ...")
+    # Download model Indonesia asli (bukan hasil training sebelumnya)
+    r = requests.get(f"{BACKEND_URL}/api/yolo-model/download/base", stream=True, timeout=300)
     if r.status_code == 200:
-        base_model_path = "/tmp/jaktraffic_base.pt"
+        base_model_path = "/tmp/jaktraffic_yolo11x.pt"
+        downloaded = 0
         with open(base_model_path, "wb") as f:
             for chunk in r.iter_content(1024*1024):
                 f.write(chunk)
-        log(f"Model diunduh: {base_model_path}")
+                downloaded += len(chunk)
+        log(f"Model diunduh: {base_model_path} ({downloaded/1e6:.0f} MB)")
     else:
+        log(f"Download base gagal ({r.status_code}) — fallback ke yolo11x.pt dari Ultralytics")
         base_model_path = "yolo11x.pt"
-        log(f"Fallback ke base YOLO11x (training dari scratch)")
 
 # GPU info
 device   = 0 if torch.cuda.is_available() else "cpu"

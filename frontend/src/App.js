@@ -287,16 +287,27 @@ const gpuBadgeHtml = `<span style="
   pointer-events:none;z-index:10;
 ">⚡</span>`;
 
+/* ── speed label kecil di bawah marker ── */
+const speedLabelHtml = (speed, color) => `<span style="
+  position:absolute;top:calc(100% + 1px);left:50%;transform:translateX(-50%);
+  background:rgba(0,0,0,.75);color:${color};
+  font-size:8px;font-weight:800;line-height:1;
+  padding:1px 3px;border-radius:3px;
+  white-space:nowrap;pointer-events:none;
+  font-variant-numeric:tabular-nums;
+">${Math.round(speed)}km/h</span>`;
+
 /* ================= CCTV ICON ================= */
-const pulseIcon = (status, isHighlighted = false, gpuBadge = false) => {
+const pulseIcon = (status, isHighlighted = false, gpuBadge = false, speedKmh = null) => {
   const color = status === "MERAH" ? "#ef4444" : status === "KUNING" ? "#f97316" : "#22c55e";
   const pulseRgb = status === "MERAH" ? "239,68,68" : status === "KUNING" ? "249,115,22" : "34,197,94";
   const size  = isHighlighted ? 32 : 28;
   const dot   = isHighlighted ? 22 : 20;
   const off   = (size - dot) / 2;
+  const sColor = speedKmh == null ? null : speedKmh < 15 ? '#ef4444' : speedKmh < 35 ? '#f97316' : '#22c55e';
   return L.divIcon({
     className: "",
-    html: `<div style="position:relative;width:${size}px;height:${size}px;">
+    html: `<div style="position:relative;width:${size}px;height:${size + (speedKmh != null ? 12 : 0)}px;">
       ${isHighlighted ? `<span style="
         position:absolute;inset:-5px;border-radius:50%;
         border:2px solid #3b82f6;
@@ -304,7 +315,7 @@ const pulseIcon = (status, isHighlighted = false, gpuBadge = false) => {
         animation:chatHL 1.4s ease-in-out infinite;
       "></span>` : ""}
       <span style="
-        position:absolute;inset:0;border-radius:50%;
+        position:absolute;inset:0;width:${size}px;height:${size}px;border-radius:50%;
         background:rgba(${pulseRgb},.35);
         animation:cctvPulse 1.8s ease-out infinite;
       "></span>
@@ -315,6 +326,7 @@ const pulseIcon = (status, isHighlighted = false, gpuBadge = false) => {
         box-shadow:0 1px 4px rgba(0,0,0,.35);
       "></span>
       ${gpuBadge ? gpuBadgeHtml : ''}
+      ${speedKmh != null && speedKmh > 2 ? speedLabelHtml(speedKmh, sColor) : ''}
     </div>
     <style>
       @keyframes cctvPulse {
@@ -327,19 +339,20 @@ const pulseIcon = (status, isHighlighted = false, gpuBadge = false) => {
         50%     { opacity:.5; transform:scale(1.12); }
       }
     </style>`,
-    iconSize:   [size, size],
+    iconSize:   [size, size + (speedKmh != null ? 12 : 0)],
     iconAnchor: [size / 2, size / 2],
   });
 };
 
 /* ================= TOLL ICON (diamond) ================= */
-const tollIcon = (status, isHighlighted = false, gpuBadge = false) => {
+const tollIcon = (status, isHighlighted = false, gpuBadge = false, speedKmh = null) => {
   const color = status === "MERAH" ? "#ef4444" : status === "KUNING" ? "#f97316" : "#22c55e";
   const pulseRgb = status === "MERAH" ? "239,68,68" : status === "KUNING" ? "249,115,22" : "34,197,94";
   const size = isHighlighted ? 30 : 26;
+  const sColor = speedKmh == null ? null : speedKmh < 15 ? '#ef4444' : speedKmh < 35 ? '#f97316' : '#22c55e';
   return L.divIcon({
     className: "",
-    html: `<div style="position:relative;width:${size}px;height:${size}px;">
+    html: `<div style="position:relative;width:${size}px;height:${size + (speedKmh != null ? 12 : 0)}px;">
       ${isHighlighted ? `<span style="
         position:absolute;inset:-5px;border-radius:3px;
         border:2px solid #3b82f6;
@@ -347,26 +360,27 @@ const tollIcon = (status, isHighlighted = false, gpuBadge = false) => {
         transform:rotate(45deg);
       "></span>` : ""}
       <span style="
-        position:absolute;inset:3px;
+        position:absolute;inset:3px;width:${size-6}px;height:${size-6}px;
         background:rgba(${pulseRgb},.3);
         transform:rotate(45deg);border-radius:3px;
         animation:cctvPulse 1.8s ease-out infinite;
       "></span>
       <span style="
-        position:absolute;inset:6px;
+        position:absolute;inset:6px;width:${size-12}px;height:${size-12}px;
         background:${color};border:2px solid white;
         transform:rotate(45deg);border-radius:3px;
         box-shadow:0 1px 4px rgba(0,0,0,.4);
       "></span>
       <span style="
-        position:absolute;bottom:-1px;right:-1px;
+        position:absolute;bottom:${speedKmh != null ? 13 : -1}px;right:-1px;
         font-size:8px;line-height:1;
         background:#0f172a;color:#94a3b8;
         border-radius:2px;padding:0 1px;
         font-weight:700;pointer-events:none;
       ">${gpuBadge ? '⚡' : 'TOL'}</span>
+      ${speedKmh != null && speedKmh > 2 ? speedLabelHtml(speedKmh, sColor) : ''}
     </div>`,
-    iconSize:   [size, size],
+    iconSize:   [size, size + (speedKmh != null ? 12 : 0)],
     iconAnchor: [size / 2, size / 2],
   });
 };
@@ -1983,7 +1997,7 @@ export default function App() {
           const markerStatus = (dbStatus==='MERAH'||dbStatus==='PADAT') ? 'MERAH' : (dbStatus==='KUNING'||dbStatus==='RAMAI') ? 'KUNING' : undefined;
           const isHighlighted = highlighted.includes(c.id);
           return (
-            <Marker key={c.id} position={[c.lat, c.lng]} icon={c.road_type==='toll'?tollIcon(markerStatus,isHighlighted,isGpuFresh(c.last_gpu_scan)):pulseIcon(markerStatus,isHighlighted,isGpuFresh(c.last_gpu_scan))} eventHandlers={{ click: () => {
+            <Marker key={c.id} position={[c.lat, c.lng]} icon={c.road_type==='toll'?tollIcon(markerStatus,isHighlighted,isGpuFresh(c.last_gpu_scan),c.speed_kmh!=null&&ev>=5?c.speed_kmh:null):pulseIcon(markerStatus,isHighlighted,isGpuFresh(c.last_gpu_scan),c.speed_kmh!=null&&ev>=5?c.speed_kmh:null)} eventHandlers={{ click: () => {
               setCompareMode(null); setHighlighted([]);
               const vv = getEffectiveVehicles(c);
               const lbl = vv > 40 ? 'padat' : vv > 20 ? 'ramai' : 'lancar';

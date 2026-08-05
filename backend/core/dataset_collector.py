@@ -249,12 +249,13 @@ def _get_active_cameras(db_handler) -> tuple[list, list]:
 
         # Kamera prioritas: dikonfirmasi GPU scan + ada kendaraan terdeteksi
         cur.execute("""
-            SELECT id, name, stream_url, vehicles
-            FROM cctv_locations
-            WHERE stream_url IS NOT NULL AND stream_url != ''
-              AND last_gpu_scan > NOW() - INTERVAL '3 hours'
-              AND vehicles >= 1
-            ORDER BY vehicles DESC, last_gpu_scan DESC
+            SELECT cl.id, cl.name, cl.stream_url, ct.vehicles
+            FROM cctv_locations cl
+            JOIN current_traffic ct ON ct.id = cl.id
+            WHERE cl.stream_url IS NOT NULL AND cl.stream_url != ''
+              AND ct.last_gpu_scan > NOW() - INTERVAL '3 hours'
+              AND ct.vehicles >= 1
+            ORDER BY ct.vehicles DESC, ct.last_gpu_scan DESC
         """)
         priority = cur.fetchall()
 
